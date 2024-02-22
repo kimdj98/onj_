@@ -1,3 +1,14 @@
+*.zip
+dataset/
+
+outputs/
+*.pt
+sa.png
+*.png
+
+deleted/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -1,0 +1,21 @@
+preprocess:
+  data_dir: ${data_dir}/${data_version}
+  dest_dir: ${preprocess.data_dir}/preprocessed
+  label_path: ${preprocess.data_dir}/label_v231122/label.yaml
+  split_ratio: 0.8
+
+  img_process:
+    CT: 
+      size: [512, 512] # [width, height]
+    panorama: 
+      size: [2048, 1024] # [width, height]
+
+data:
+  data_dir: /mnt/4TB1/onj/dataset/${data_version}
+  label_path: ${preprocess.data_dir}/label_v231122/label.yaml
+  
+  split_ratio: 0.8
+  test: true
+
+model:
+  
