@@ -5,11 +5,11 @@ sys.path.append(".")
 
 import hydra
 from data.onj_dataset import get_data_loader
-from model.detection.model import TempModel
+from model.model import TempModel
 from tqdm import tqdm
 
 
-@hydra.main(config_path="../config", config_name="config")
+@hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(conf):
     data_dir = pathlib.Path(conf.data_dir) / conf.data_version  # path to /dataset
 

@@ -10,6 +10,7 @@ from tqdm import tqdm
 error_folders = []
 CT_MODALS = ["MDCT", "CBCT"]
 
+
 # Convert ONJ dicom file to nifti
 def dicom_to_nifti(data_path):
     for patient in tqdm(list(data_path.glob("*"))):
@@ -34,14 +35,14 @@ def dicom_to_nifti(data_path):
                         continue
 
 
-@hydra.main(config_path="../config", config_name="config")
+@hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg: DictConfig):
-    DATAPATH = Path(cfg.data.data_dir) / "ONJ"
-    ONJ_PATH = DATAPATH / "ONJ"
-    NONONJ_PATH = DATAPATH / "Non_ONJ"
+    DATAPATH = Path(cfg.data.data_dir)
+    ONJ_PATH = DATAPATH / "ONJ_labeling"
+    # NONONJ_PATH = DATAPATH / "Non_ONJ"
 
     dicom_to_nifti(ONJ_PATH)
-    dicom_to_nifti(NONONJ_PATH)
+    # dicom_to_nifti(NONONJ_PATH)
 
     for f in error_folders:
         print(f)

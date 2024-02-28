@@ -1,0 +1,5 @@
+path: /mnt/4TB1/onj/dataset/v0
+train: /mnt/4TB1/onj/dataset/v0/YOLO/images/train
+val: /mnt/4TB1/onj/dataset/v0/YOLO/images/val
+nc: 1
+names: ['ROI']
