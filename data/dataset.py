@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from omegaconf import DictConfig
+from enum import Enum
 
 from monai.data import Dataset, DataLoader
 from monai.transforms import (
@@ -23,6 +24,20 @@ from monai.transforms import (
 )
 from monai.config.type_definitions import NdarrayTensor
 from monai.visualize.utils import blend_images, matshow3d  ## label과 Image를 합친 영상  ## 3d image의 visulization
+
+import torch
+# from torch.utils.data import Dataset, DataLoader
+
+class Modal(Enum):
+    MDCT = "MDCT"
+    CBCT = "CBCT"
+    PA = "panorama"
+
+
+class Direction(Enum):
+    AXIAL = "axial"
+    SAGITTAL = "sagittal"
+    CORONAL = "coronal"
 
 
 def load_data_dict(conf: DictConfig, modal: str, dir: str, type: str) -> dict:
@@ -113,7 +128,7 @@ class LoadJsonLabeld(MapTransform):
         for i in range(num_labels):
             slice = labels["slices"][i]
             slice_number = slice["slice_number"] - SOI[0]
-            # TODO: Check if the coordinate type is x, y, w, h
+            # TODO: Check if the coordinate type is Cx, Cy, w, h
             x = slice["bbox"][0]["coordinates"][0]
             y = slice["bbox"][0]["coordinates"][1]
             w = slice["bbox"][0]["coordinates"][2]
@@ -126,61 +141,79 @@ class LoadJsonLabeld(MapTransform):
         return data
 
 
+def helper_function(patient, modal, data_dicts, include_name=False):
+    """
+    helper function for function patient_dicts
+    1. check if patient has label.json(check if it has labels)
+    2. check if patient has certain modal ("MDCT", "CBCT")
+    3. if the patient has certain modal add the nifti path and labels to data_dicts
+    """
+    if (patient / modal).exists():
+        if modal == Modal.CBCT or modal == Modal.MDCT:  # case: CT
+            for modal_dir in (patient / modal).glob("*/*"):
+                if not modal_dir.is_dir():
+                    continue
+                if (
+                    "nifti" in os.listdir(modal_dir)
+                    and "label.json" in os.listdir(modal_dir)
+                    and "axial" in modal_dir.name
+                ):
+                    if include_name:
+                        data_dicts.append(
+                            {
+                                "name": modal_dir,
+                                "image": modal_dir / "nifti" / "output.nii.gz",
+                                "label": modal_dir / "label.json",
+                            }
+                        )
+                    else:
+                        data_dicts.append(
+                            {
+                                "image": modal_dir / "nifti" / "output.nii.gz",
+                                "label": modal_dir / "label.json",
+                            }
+                        )
+
+        if modal == Modal.PA:
+            for pa_img in (patient / modal).glob("*/*"):
+                if include_name:
+                    data_dicts.append(
+                        {
+                            "name": modal_dir,
+                            "image": pa_img,
+                            "label": modal_dir / "label.json",
+                        }
+                    )
+                else:
+                    data_dicts.append(
+                        {
+                            "image": modal_dir / "nifti" / "output.nii.gz",
+                            "label": modal_dir / "label.json",
+                        }
+                    )
+
+
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def patient_dicts(cfg: DictConfig) -> Dataset:
 
     # create data_dicts
     DATAPATH = Path(cfg.data.ONJ_dir)
-
+    include_name = cfg.data.data_generation
     data_dicts = []
-
-    i = 0
-    j = 0
 
     for patient in DATAPATH.glob("*"):
         if (patient / "label.json").exists():
-            # print(patient / "label.json")
-            i += 1
-            if (patient / "CBCT").exists():
-                for modal_dir in (patient / "CBCT").glob("*/*"):
-                    if not modal_dir.is_dir():
-                        continue
-                    if (
-                        "nifti" in os.listdir(modal_dir)
-                        and "label.json" in os.listdir(modal_dir)
-                        and "axial" in modal_dir.name
-                    ):
-                        data_dicts.append(
-                            {
-                                "name": modal_dir,
-                                "image": modal_dir / "nifti" / "output.nii.gz",
-                                "label": modal_dir / "label.json",
-                            }
-                        )
-
-            if (patient / "MDCT").exists():
-                for modal_dir in (patient / "MDCT").glob("*/*"):
-                    if not modal_dir.is_dir():
-                        continue
-                    if (
-                        "nifti" in os.listdir(modal_dir)
-                        and "label.json" in os.listdir(modal_dir)
-                        and "axial" in modal_dir.name
-                    ):
-                        data_dicts.append(
-                            {
-                                "name": modal_dir,
-                                "image": modal_dir / "nifti" / "output.nii.gz",
-                                "label": modal_dir / "label.json",
-                            }
-                        )
+            helper_function(patient, "CBCT", data_dicts, include_name=include_name)
+            helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
         else:
             print(patient)
 
-        j += 1
-
     return data_dicts
+
+
+class PA_dataset(torch.utils.data.Dataset):
+    
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -198,7 +231,7 @@ def main(cfg: DictConfig) -> None:
             # ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
             ScaleIntensityRangePercentilesd(
                 keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
-            ),
+            ),  # emperically known to be better than ScaleIntensityRanged
             Rotate90d(keys=["image"], spatial_axes=(0, 1)),
             Resized(keys=["image"], spatial_size=(dim_x, dim_y, -1), mode="trilinear"),
             ToTensord(keys=["image"]),

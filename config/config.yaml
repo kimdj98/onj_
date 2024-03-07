@@ -11,8 +11,15 @@
 #       size: [2048, 1024] # [width, height]
 
 data:
-  data_version: v0
+  data_version: v0 # dataset version
   CT_dim: [512, 512]
+  PA_dim: [2048, 1024]
+  data_generation: true # set true if you want to generate data, set false when training
+  modal: panorama # data_generation modal: CT, panorama
+  dir: axial # axial, coronal(, sagittal)
+
+  # split_label
+  split_modal: panorama # CT, panorama
 
   data_dir: /mnt/4TB1/onj/dataset/${data.data_version}
   ONJ_dir: ${data.data_dir}/ONJ_labeling
