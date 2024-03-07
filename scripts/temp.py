@@ -88,10 +88,10 @@ def main(cfg: DictConfig):
             LoadImaged(keys=["image"]),
             EnsureChannelFirstd(keys=["image"]),
             LoadJsonLabel(keys=["label"]),  # Use the custom transform for labels
-            # ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
-            ScaleIntensityRangePercentilesd(
-                keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
-            ),
+            ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
+            # ScaleIntensityRangePercentilesd(
+            #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
+            # ),
             Rotate90d(keys=["image"], spatial_axes=(0, 1)),
             Flipd(keys=["image"], spatial_axis=2),
             Resized(keys=["image"], spatial_size=(dim_x, dim_y, -1), mode="trilinear"),
