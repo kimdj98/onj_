@@ -152,9 +152,6 @@ This section should list any major frameworks/libraries used to bootstrap your p
 
 <!-- _For more examples, please refer to the [Documentation](https://example.com)_ -->
 
-  ```sh
-  python3 scripts/temp.py
-  ```
 
 Notes for hydra
 - hydra will automatically set the working directory if you set the version_base to 1.1
