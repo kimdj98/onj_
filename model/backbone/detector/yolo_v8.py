@@ -3,7 +3,7 @@ import hydra
 from omegaconf import DictConfig
 
 
-@hydra.main(config_path="../../../config", config_name="config")
+@hydra.main(version_base="1.1", config_path="../../../config", config_name="config")
 def main(cfg: DictConfig):
     model = ultralytics.YOLO("yolov8n.pt")
 

@@ -78,7 +78,7 @@ class LoadJsonLabel(MapTransform):
         return data
 
 
-@hydra.main(version_base="1.3", config_path="../config", config_name="config")
+@hydra.main(version_base="1.1", config_path="../config", config_name="config")
 def main(cfg: DictConfig):
     dim_x = cfg.data.CT_dim[0]
     dim_y = cfg.data.CT_dim[1]

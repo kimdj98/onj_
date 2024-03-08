@@ -26,7 +26,9 @@ from monai.config.type_definitions import NdarrayTensor
 from monai.visualize.utils import blend_images, matshow3d  ## label과 Image를 합친 영상  ## 3d image의 visulization
 
 import torch
+
 # from torch.utils.data import Dataset, DataLoader
+
 
 class Modal(Enum):
     MDCT = "MDCT"
@@ -212,8 +214,7 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
     return data_dicts
 
 
-class PA_dataset(torch.utils.data.Dataset):
-    
+# class PA_dataset(torch.utils.data.Dataset):
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
