@@ -74,6 +74,8 @@ def main(cfg:DictConfig):
 
     patientdicts = patient_dicts(cfg)
     dataset = Dataset(data=patientdicts, transform=None)
+
+
     print(patientdicts)
     quit()
 
