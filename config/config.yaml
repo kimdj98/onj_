@@ -1,0 +1,33 @@
+# preprocess:
+#   data_dir: ${data_dir}/${data_version}
+#   dest_dir: ${preprocess.data_dir}/preprocessed
+#   label_path: ${preprocess.data_dir}/label_v231122/label.yaml
+#   split_ratio: 0.8
+
+#   img_process:
+#     CT: 
+#       size: [512, 512] # [width, height]
+#     panorama: 
+#       size: [2048, 1024] # [width, height]
+
+data:
+  data_version: v0 # dataset version
+  CT_dim: [512, 512]
+  PA_dim: [2048, 1024]
+  data_generation: true # set true if you want to generate data, set false when training
+  modal: panorama # data_generation modal: CT, panorama
+  dir: axial # axial, coronal(, sagittal)
+
+  # split_label
+  split_modal: panorama # CT, panorama
+
+  data_dir: /mnt/4TB1/onj/dataset/${data.data_version}
+  ONJ_dir: ${data.data_dir}/ONJ_labeling
+  Non_ONJ_dir: ${data.data_dir}/Non_ONJ
+  label_dir: /mnt/4TB1/onj/dataset/${data.data_version}/label_v231122/label.json
+
+  split_ratio: 0.8
+  test_split: true
+
+model:
+  
