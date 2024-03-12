@@ -196,54 +196,57 @@ def main(cfg:DictConfig):
 
         ONJ_class = patient["name"].parent.parent.parent.parent.name
 
-        # find which split the patient belongs to
-        if patient_name in train:
-            split = "train"
-            data_total = train_total 
-            label_total = train_label
-
-        elif patient_name in val:
-            split = "val"
-            data_total = val_total 
-            label_total = val_label
-
-        elif patient_name in test:
-            split = "test"
-            data_total = test_total 
-            label_total = test_label
-
-        else:
-            print("patient not in split file")
-            continue
+        print(patient_name)
+        if str(ONJ_class)=='Non_ONJ' or str(ONJ_class)=="ONJ_labeling":
         
+            # find which split the patient belongs to
+            if patient_name in train:
+                split = "train"
+                data_total = train_total 
+                label_total = train_label
 
-        ## uncomment below line when not using transforms
-        # img_obj = nib.load(patient["image"]) ## (512, 512, 190)
-        # img_3d = img_obj.get_fdata()
+            elif patient_name in val:
+                split = "val"
+                data_total = val_total 
+                label_total = val_label
 
-        img_3d = patient["image"].squeeze(0) # (512, 512, 91)
+            elif patient_name in test:
+                split = "test"
+                data_total = test_total 
+                label_total = test_label
 
-        #convert to channel-first numpy array # for 3D U-Net input
-        img_3d = np.moveaxis(img_3d, -1, 0)
-        
-        ## get label data  ## classification label
-        if "ONJ_labeling" in ONJ_class:
-            label = 1
-        elif "Non_ONJ" in ONJ_class:
-            label = 0
-        else:
-            print(ONJ_class)
+            else:
+                print("patient not in split file")
+                continue
+            
 
-        print('original size: ', img_3d.shape, ONJ_class)
-        ## image preprocessing
-        depth_ratio = 70 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
-        wh_ratio = 512 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+            ## uncomment below line when not using transforms
+            # img_obj = nib.load(patient["image"]) ## (512, 512, 190)
+            # img_3d = img_obj.get_fdata()
 
-        resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
-        resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio, wh_ratio))
+            img_3d = patient["image"].squeeze(0) # (512, 512, 91)
 
-        data_total.append(resized_img_3d)
-        label_total.append(label)
+            #convert to channel-first numpy array # for 3D U-Net input
+            img_3d = np.moveaxis(img_3d, -1, 0)
+            
+            ## get label data  ## classification label
+            if "ONJ_labeling" in ONJ_class:
+                label = 1
+            elif "Non_ONJ" in ONJ_class:
+                label = 0
+            else:
+                print(ONJ_class)
+
+            print('original size: ', img_3d.shape, ONJ_class)
+            ## image preprocessing
+            depth_ratio = 70 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
+            wh_ratio = 512 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+
+            resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
+            resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio, wh_ratio))
+
+            data_total.append(resized_img_3d)
+            label_total.append(label)
 
 
     train_total = np.stack(train_total, axis=0)
@@ -269,7 +272,7 @@ def main(cfg:DictConfig):
     np.save(save_dir+'test_total.npy', test_total)
     np.save(save_dir+'test_label.npy', test_label)
     
-    quit()
+    # quit()
 
 
 

@@ -151,7 +151,7 @@ def helper_function(patient, modal, data_dicts, include_name=False):
     3. if the patient has certain modal add the nifti path and labels to data_dicts
     """
     if (patient / modal).exists():
-
+        print(patient)
         if modal == "CBCT" or modal == "MDCT":  # case: CT
 
             for modal_dir in (patient / modal).glob("*/*"):
@@ -208,12 +208,14 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
     include_name = cfg.data.data_generation
     data_dicts = []
 
-    for patient in DATAPATH_ONJ.glob("*"):
-        print(patient)
-        helper_function(patient, "CBCT", data_dicts, include_name=include_name)
-        helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
     for patient in DATAPATH_NONJ.glob("*"):
+        print(patient)
+        if patient.name not in ["EW-0243", "EW-0429"]:
+            helper_function(patient, "CBCT", data_dicts, include_name=include_name)
+            helper_function(patient, "MDCT", data_dicts, include_name=include_name)
+
+    for patient in DATAPATH_ONJ.glob("*"):
         print(patient)
         helper_function(patient, "CBCT", data_dicts, include_name=include_name)
         helper_function(patient, "MDCT", data_dicts, include_name=include_name)
