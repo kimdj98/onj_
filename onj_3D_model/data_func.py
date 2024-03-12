@@ -177,8 +177,6 @@ def helper_function(patient, modal, data_dicts, include_name=False):
                                 "label": modal_dir / "label.json",
                             }
                         )
-                        print('aaaa')
-                        quit()
 
         if modal == Modal.PA:
             for pa_img in (patient / modal).glob("*/*"):
