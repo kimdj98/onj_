@@ -159,7 +159,7 @@ def helper_function(patient, modal, data_dicts, include_name=False):
                     continue
                 if (
                     "nifti" in os.listdir(modal_dir)
-                    and "label.json" in os.listdir(modal_dir)
+                    # and "label.json" in os.listdir(modal_dir)
                     and "axial" in modal_dir.name
                 ):
                     if include_name:
@@ -167,14 +167,14 @@ def helper_function(patient, modal, data_dicts, include_name=False):
                             {
                                 "name": modal_dir,
                                 "image": modal_dir / "nifti" / "output.nii.gz",
-                                "label": modal_dir / "label.json",
+                                # "label": modal_dir / "label.json",
                             }
                         )
                     else:
                         data_dicts.append(
                             {
                                 "image": modal_dir / "nifti" / "output.nii.gz",
-                                "label": modal_dir / "label.json",
+                                # "label": modal_dir / "label.json",
                             }
                         )
 
@@ -201,17 +201,22 @@ def helper_function(patient, modal, data_dicts, include_name=False):
 def patient_dicts(cfg: DictConfig) -> Dataset:
 
     # create data_dicts
-    DATAPATH = Path(cfg.data.ONJ_dir)
+    #! Change to using ONJ and Non_ONJ
+    DATAPATH_ONJ = Path(cfg.data.ONJ_dir)
+    DATAPATH_NONJ = Path(cfg.data.Non_ONJ_dir)
+
     include_name = cfg.data.data_generation
     data_dicts = []
 
-    for patient in DATAPATH.glob("*"):
-        if (patient / "label.json").exists():
+    for patient in DATAPATH_ONJ.glob("*"):
+        print(patient)
+        helper_function(patient, "CBCT", data_dicts, include_name=include_name)
+        helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
-            helper_function(patient, "CBCT", data_dicts, include_name=include_name)
-            helper_function(patient, "MDCT", data_dicts, include_name=include_name)
-        else:
-            print(patient)
+    for patient in DATAPATH_NONJ.glob("*"):
+        print(patient)
+        helper_function(patient, "CBCT", data_dicts, include_name=include_name)
+        helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
     return data_dicts
 
