@@ -111,6 +111,14 @@ class UNet3D(nn.Module):
         self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
         self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
 
+        self.global_avg_pool = nn.AdaptiveAvgPool3d(1)
+
+        self.linear = nn.Sequential(
+            nn.Linear(bottleneck_channel, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1),
+        )
     
     def forward(self, input):
         #Analysis path forward feed
@@ -119,10 +127,18 @@ class UNet3D(nn.Module):
         out, residual_level3 = self.a_block3(out)
         out, _ = self.bottleNeck(out)
 
+        # print(out.shape) #(1, 512, 8, 64, 64)
+        
+        out = self.global_avg_pool(out)
+        out = torch.flatten(out, 1)
+        out = self.linear(out)
+
+
+
         #Synthesis path forward feed
-        out = self.s_block3(out, residual_level3)
-        out = self.s_block2(out, residual_level2)
-        out = self.s_block1(out, residual_level1)
+        # out = self.s_block3(out, residual_level3)
+        # out = self.s_block2(out, residual_level2)
+        # out = self.s_block1(out, residual_level1)
         return out
 
 

@@ -208,15 +208,21 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
     include_name = cfg.data.data_generation
     data_dicts = []
 
-
+    file_count = 0
     for patient in DATAPATH_NONJ.glob("*"):
         print(patient)
-        if patient.name not in ["EW-0243", "EW-0429"]:
+        
+        if patient.name not in ["EW-0243", "EW-0429", "EW-0107", "EW-0373"]:
+            file_count += 1
             helper_function(patient, "CBCT", data_dicts, include_name=include_name)
             helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
+    file_count = 0
     for patient in DATAPATH_ONJ.glob("*"):
         print(patient)
+        
+        # if file_count <= 10:
+        #     file_count+= 1
         helper_function(patient, "CBCT", data_dicts, include_name=include_name)
         helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 

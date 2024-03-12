@@ -8,6 +8,7 @@ outputs/
 sa.png
 *.png
 *.npy
+*.pth
 
 deleted/
 .vscode/

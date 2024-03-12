@@ -186,6 +186,11 @@ def main(cfg:DictConfig):
     train_label = []
     val_label = []
     test_label = []
+    count_train = 0
+    count_val = 0
+    count_test = 0
+    count_onj = 0
+    count_nonj = 0
 
     for patient in tqdm(dataset):
 
@@ -198,22 +203,25 @@ def main(cfg:DictConfig):
 
         print(patient_name)
         if str(ONJ_class)=='Non_ONJ' or str(ONJ_class)=="ONJ_labeling":
-        
+
             # find which split the patient belongs to
             if patient_name in train:
                 split = "train"
                 data_total = train_total 
                 label_total = train_label
+                count_train += 1
 
             elif patient_name in val:
                 split = "val"
                 data_total = val_total 
                 label_total = val_label
+                count_val += 1
 
             elif patient_name in test:
                 split = "test"
                 data_total = test_total 
                 label_total = test_label
+                count_test += 1
 
             else:
                 print("patient not in split file")
@@ -232,21 +240,28 @@ def main(cfg:DictConfig):
             ## get label data  ## classification label
             if "ONJ_labeling" in ONJ_class:
                 label = 1
+                count_onj += 1
             elif "Non_ONJ" in ONJ_class:
                 label = 0
+                count_nonj += 1
             else:
                 print(ONJ_class)
 
             print('original size: ', img_3d.shape, ONJ_class)
             ## image preprocessing
             depth_ratio = 70 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
-            wh_ratio = 512 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+            wh_ratio1 = 512 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+            wh_ratio2 = 512 / img_3d.shape[2]
 
             resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
-            resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio, wh_ratio))
+            resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio1, wh_ratio2))
 
             data_total.append(resized_img_3d)
             label_total.append(label)
+            print(resized_img_3d.shape)
+        print(count_train, count_val, count_test)
+
+
 
 
     train_total = np.stack(train_total, axis=0)
