@@ -41,38 +41,51 @@ BCE_WEIGHTS = [0.004, 0.996]
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
-x_train = np.load(data_dir+'/'+'train_total_tmp.npy')
-y_train = np.load(data_dir+'/'+'train_label_tmp.npy')
+# x_train = np.load(data_dir+'/'+'train_total_mini.npy') # memory
+# y_train = np.load(data_dir+'/'+'train_label_mini.npy')
 
-x_val = np.load(data_dir+'/'+'val_total_tmp.npy')
-y_val = np.load(data_dir+'/'+'val_label_tmp.npy')
 
-x_test = np.load(data_dir+'/'+'test_total_tmp.npy')
-y_test = np.load(data_dir+'/'+'test_label_tmp.npy')
+
+# x_val = np.load(data_dir+'/'+'val_total.npy')
+# y_val = np.load(data_dir+'/'+'val_label.npy')
+
+# x_test = np.load(data_dir+'/'+'test_total.npy')
+# y_test = np.load(data_dir+'/'+'test_label.npy')
+
 
 class CustomDataset(Dataset):
-    def __init__(self, img, Y):
-        self.img = torch.Tensor(img).float().to(device)
-        self.Y = torch.Tensor(Y).float().to(device)
+    def __init__(self, split):
+        if split == 'train':
+
+            self.img = np.load(data_dir+f'/{split}_total_mini.npy', mmap_mode='r')
+            self.Y = np.load(data_dir+f'/{split}_label_mini.npy', mmap_mode='r')
+        elif split in ['test', 'val']:
+            self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
+            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
+
+        # self.img = torch.Tensor(self.img).float().to(device)
+        # self.Y = torch.Tensor(self.Y).float().to(device)
         
     def __len__(self):
         return len(self.img)
     
     def __getitem__(self, idx):
         
-        img_idx = self.img[idx]
-        Y_idx = self.Y[idx]
+        img_idx = self.load_data(self.img, idx)
+        Y_idx = self.load_data(self.Y, idx)
     
         return img_idx, Y_idx
+    def load_data(self, mmap_array, idx):
+        return mmap_array[idx]
 
 
-train_dataset = CustomDataset(x_train, y_train)
-val_dataset = CustomDataset(x_val, y_val)
-test_dataset = CustomDataset(x_test, y_test)
+train_dataset = CustomDataset('train')
+val_dataset = CustomDataset('val')
+test_dataset = CustomDataset('test')
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True)
-# val_dataloader = DataLoader(val_dataset, batch_size = BATCH_SIZE, shuffle=True)
-# test_dataloader = DataLoader(test_dataset, batch_size = len(test_dataset), shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
+val_dataloader = DataLoader(val_dataset, batch_size = len(val_dataset), shuffle=True)
+test_dataloader = DataLoader(test_dataset, batch_size = len(test_dataset), shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
 
 
 model = UNet3D(in_channels=IN_CHANNELS, num_classes = 2).to(device)
@@ -96,10 +109,11 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lam
 
 
 total_loss = []
+total_val_loss = []
 best_loss = 1000
 
 # Training loop
-for epoch in range(5):
+for epoch in range(30):
     print('epoch: ', epoch)
     
     with tqdm(dataloader, unit='batch') as tepoch:
@@ -112,7 +126,8 @@ for epoch in range(5):
             img = img.unsqueeze(1)
             y = y.unsqueeze(1)
             
-
+            img = torch.Tensor(img).float().to(device)
+            y = torch.Tensor(y).float().to(device)
             pred = model(img)
             loss = criterion(pred, y)
             tepoch.set_postfix(loss=loss.item())
@@ -142,32 +157,56 @@ for epoch in range(5):
                 plt.savefig(save_dir+f'/test.jpg')
                 plt.close()
 
-        print(batch_loss)   
-        print(total_loss)    
+        batch_loss /= idx
         total_loss = np.append(total_loss, batch_loss)
-    if args.m == 1:        
-        if batch_loss < best_loss:
+    if args.m == 1:       
+        ## check validation loss
+        val_batch_loss = 0
+        for val_idx, (val_img, val_y) in enumerate(val_dataloader):
+
+            batch_size = img.shape[0]
+            img = img.unsqueeze(1)
+            y = y.unsqueeze(1)
+        
+            
+            val_batch_size = val_img.shape[0]
+            val_img = val_img.unsqueeze(1)
+            val_y = val_y.unsqueeze(1)
+
+            val_img = val_img[:10]
+            val_y = val_y[:10]
+            
+            val_img = torch.Tensor(val_img).float().to(device)
+            val_y = torch.Tensor(val_y).float().to(device)
+            val_pred = model(val_img)
+            val_loss = criterion(val_pred, val_y)
+            val_batch_loss += val_loss / val_batch_size
+
+        total_val_loss = np.append(total_val_loss, val_batch_loss)
+
+        if val_batch_loss < best_loss:
 
             torch.save({
                         'model_state_dict': model.state_dict(),
                         'loss': batch_loss},
-                        save_dir+'/'+'model.pth')
+                        save_dir+'/'+'model_state_dict.pth')
 
             torch.save(model, save_dir+'/'+'model.pth')
 
-            best_loss = batch_loss
+            best_loss = val_batch_loss
                                     
         else:
             pass
         
             
-    print('loss: ', batch_loss)
+    print('train loss: ', batch_loss, 'val loss: ', val_batch_loss)
         
 
     total_loss = np.array(total_loss)
+    total_val_loss = np.array(total_val_loss)
 
     plt.plot(total_loss, label='train')
-    # plt.plot(total_loss_val, label='val')
+    plt.plot(total_val_loss, label='val')
     plt.legend()
     plt.savefig(save_dir+'/train_loss.jpg')
     plt.close()
