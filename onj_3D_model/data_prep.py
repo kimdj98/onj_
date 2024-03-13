@@ -79,8 +79,9 @@ class ExtractSliced(MapTransform):
     def __call__(self, data: dict) -> dict:
         label_path = data["label"]
 
-        if label_path == "":
+        if label_path == "" or "Non_ONJ" in data["name"].parent.parent.parent.parent.name:
             return data
+
 
         with open(label_path, "r") as file:
             labels = json.load(file)
@@ -149,10 +150,8 @@ transforms = Compose(
         Flipd(keys=["image"], spatial_axis=2),  # Flip the image along the z-axis
         
         
-        ## After we get updated version of Non_ONJ (consisting of only SOI slices in folder), 
-        ## 1. First, make json file of Non_ONJ
-        ## 2. Uncomment below line
-        # ExtractSliced(keys=["image"]),
+        ## resolved Non_ONJ SOI problem
+        ExtractSliced(keys=["image"]),
         
         
         # LoadJsonLabeld(keys=["label"]),  # Use the custom transform for labels
@@ -250,7 +249,7 @@ def main(cfg:DictConfig):
             print('original size: ', img_3d.shape, ONJ_class)
             ## image preprocessing
             depth_ratio = 70 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
-            wh_ratio1 = 512 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+            wh_ratio1 = 512 / img_3d.shape[1] #desired depth = 512 (empirically chosen)
             wh_ratio2 = 512 / img_3d.shape[2]
 
             resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))

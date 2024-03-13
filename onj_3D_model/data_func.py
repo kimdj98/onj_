@@ -167,14 +167,14 @@ def helper_function(patient, modal, data_dicts, include_name=False):
                             {
                                 "name": modal_dir,
                                 "image": modal_dir / "nifti" / "output.nii.gz",
-                                # "label": modal_dir / "label.json",
+                                "label": modal_dir / "label.json",
                             }
                         )
                     else:
                         data_dicts.append(
                             {
                                 "image": modal_dir / "nifti" / "output.nii.gz",
-                                # "label": modal_dir / "label.json",
+                                "label": modal_dir / "label.json",
                             }
                         )
 

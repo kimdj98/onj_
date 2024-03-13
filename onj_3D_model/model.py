@@ -133,8 +133,6 @@ class UNet3D(nn.Module):
         out = torch.flatten(out, 1)
         out = self.linear(out)
 
-
-
         #Synthesis path forward feed
         # out = self.s_block3(out, residual_level3)
         # out = self.s_block2(out, residual_level2)

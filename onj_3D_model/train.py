@@ -46,7 +46,7 @@ if not os.path.exists(save_dir):
 
 
 
-# x_val = np.load(data_dir+'/'+'val_total.npy')
+x_val = np.load(data_dir+'/'+'val_total.npy')
 # y_val = np.load(data_dir+'/'+'val_label.npy')
 
 # x_test = np.load(data_dir+'/'+'test_total.npy')
@@ -60,8 +60,13 @@ class CustomDataset(Dataset):
             self.img = np.load(data_dir+f'/{split}_total_mini.npy', mmap_mode='r')
             self.Y = np.load(data_dir+f'/{split}_label_mini.npy', mmap_mode='r')
         elif split in ['test', 'val']:
+            
             self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
             self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
+            if split == 'val':
+                self.img = self.img[:10]
+                self.Y = self.Y[:10]
+
 
         # self.img = torch.Tensor(self.img).float().to(device)
         # self.Y = torch.Tensor(self.Y).float().to(device)
@@ -70,22 +75,27 @@ class CustomDataset(Dataset):
         return len(self.img)
     
     def __getitem__(self, idx):
-        
         img_idx = self.load_data(self.img, idx)
+        img_idx = np.asarray(img_idx).astype(np.float32)
         Y_idx = self.load_data(self.Y, idx)
+        Y_idx = np.asarray(Y_idx).astype(np.float32)
+        
+        img_tensor = torch.from_numpy(img_idx).float().to(device)
+        Y_tensor = torch.from_numpy(Y_idx).float().to(device)
     
-        return img_idx, Y_idx
+        return img_tensor, Y_tensor
+
     def load_data(self, mmap_array, idx):
         return mmap_array[idx]
 
 
 train_dataset = CustomDataset('train')
 val_dataset = CustomDataset('val')
-test_dataset = CustomDataset('test')
+# test_dataset = CustomDataset('test')
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size = len(val_dataset), shuffle=True)
-test_dataloader = DataLoader(test_dataset, batch_size = len(test_dataset), shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
+val_dataloader = DataLoader(val_dataset, batch_size = BATCH_SIZE, shuffle=True)
+# test_dataloader = DataLoader(test_dataset, batch_size = len(test_dataset), shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
 
 
 model = UNet3D(in_channels=IN_CHANNELS, num_classes = 2).to(device)
@@ -126,9 +136,9 @@ for epoch in range(30):
             img = img.unsqueeze(1)
             y = y.unsqueeze(1)
             
-            img = torch.Tensor(img).float().to(device)
-            y = torch.Tensor(y).float().to(device)
+            
             pred = model(img)
+
             loss = criterion(pred, y)
             tepoch.set_postfix(loss=loss.item())
             loss.backward()
@@ -161,42 +171,41 @@ for epoch in range(30):
         total_loss = np.append(total_loss, batch_loss)
     if args.m == 1:       
         ## check validation loss
-        val_batch_loss = 0
-        for val_idx, (val_img, val_y) in enumerate(val_dataloader):
 
-            batch_size = img.shape[0]
-            img = img.unsqueeze(1)
-            y = y.unsqueeze(1)
-        
+        with torch.no_grad():
+
+            val_batch_loss = 0
+            for val_idx, (val_img, val_y) in enumerate(val_dataloader):
+
+                batch_size = img.shape[0]
+                img = img.unsqueeze(1)
+                y = y.unsqueeze(1)
             
-            val_batch_size = val_img.shape[0]
-            val_img = val_img.unsqueeze(1)
-            val_y = val_y.unsqueeze(1)
+                
+                val_batch_size = val_img.shape[0]
+                val_img = val_img.unsqueeze(1)
+                val_y = val_y.unsqueeze(1)
+                val_pred = model(val_img)
+                val_loss = criterion(val_pred, val_y)
+                val_batch_loss += val_loss.item() / val_batch_size
+                
+            val_batch_loss /= val_idx
 
-            val_img = val_img[:10]
-            val_y = val_y[:10]
-            
-            val_img = torch.Tensor(val_img).float().to(device)
-            val_y = torch.Tensor(val_y).float().to(device)
-            val_pred = model(val_img)
-            val_loss = criterion(val_pred, val_y)
-            val_batch_loss += val_loss / val_batch_size
+            total_val_loss = np.append(total_val_loss, val_batch_loss)
 
-        total_val_loss = np.append(total_val_loss, val_batch_loss)
+            if val_batch_loss < best_loss:
 
-        if val_batch_loss < best_loss:
+                torch.save({
+                            'model_state_dict': model.state_dict(),
+                            'loss': batch_loss},
+                            save_dir+'/'+'model_state_dict.pth')
 
-            torch.save({
-                        'model_state_dict': model.state_dict(),
-                        'loss': batch_loss},
-                        save_dir+'/'+'model_state_dict.pth')
+                torch.save(model, save_dir+'/'+'model.pth')
 
-            torch.save(model, save_dir+'/'+'model.pth')
-
-            best_loss = val_batch_loss
-                                    
-        else:
-            pass
+                best_loss = val_batch_loss
+                                        
+            else:
+                pass
         
             
     print('train loss: ', batch_loss, 'val loss: ', val_batch_loss)
