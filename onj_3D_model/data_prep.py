@@ -79,7 +79,8 @@ class ExtractSliced(MapTransform):
     def __call__(self, data: dict) -> dict:
         label_path = data["label"]
 
-        if label_path == "" or "Non_ONJ" in data["name"].parent.parent.parent.parent.name:
+        if label_path == "" or "Non_ONJ" in data["name"].parent.parent.parent.parent.name or \
+        os.path.exists(label_path)==False:
             return data
 
 
@@ -248,7 +249,7 @@ def main(cfg:DictConfig):
 
             print('original size: ', img_3d.shape, ONJ_class)
             ## image preprocessing
-            depth_ratio = 70 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
+            depth_ratio = 64 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
             wh_ratio1 = 512 / img_3d.shape[1] #desired depth = 512 (empirically chosen)
             wh_ratio2 = 512 / img_3d.shape[2]
 

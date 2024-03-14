@@ -18,6 +18,7 @@ from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
 from model import UNet3D
 import argparse
 import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
 
 np.random.seed(555)
 torch.manual_seed(555)
@@ -57,8 +58,8 @@ class CustomDataset(Dataset):
     def __init__(self, split):
         if split == 'train':
 
-            self.img = np.load(data_dir+f'/{split}_total_mini.npy', mmap_mode='r')
-            self.Y = np.load(data_dir+f'/{split}_label_mini.npy', mmap_mode='r')
+            self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
+            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
         elif split in ['test', 'val']:
             
             self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
@@ -80,37 +81,40 @@ class CustomDataset(Dataset):
         Y_idx = self.load_data(self.Y, idx)
         Y_idx = np.asarray(Y_idx).astype(np.float32)
         
-        img_tensor = torch.from_numpy(img_idx).float().to(device)
-        Y_tensor = torch.from_numpy(Y_idx).float().to(device)
+        # img_tensor = torch.from_numpy(img_idx).float().to(device)
+        # Y_tensor = torch.from_numpy(Y_idx).float().to(device)
     
-        return img_tensor, Y_tensor
+        return img_idx, Y_idx
 
     def load_data(self, mmap_array, idx):
         return mmap_array[idx]
 
 
-train_dataset = CustomDataset('train')
-val_dataset = CustomDataset('val')
-# test_dataset = CustomDataset('test')
-
-train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size = BATCH_SIZE, shuffle=True)
-# test_dataloader = DataLoader(test_dataset, batch_size = len(test_dataset), shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
 
 
-model = UNet3D(in_channels=IN_CHANNELS, num_classes = 2).to(device)
-
-
+model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).to(device)
 
 if args.m == 1:
+    train_dataset = CustomDataset('train')
+    val_dataset = CustomDataset('val')
+    train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size = BATCH_SIZE, shuffle=True)
+
     dataloader = train_dataloader 
     model.train()
+    EPOCH = 30
 elif args.m == 2:
+    test_dataset = CustomDataset('test')
+    test_dataloader = DataLoader(test_dataset, batch_size = 1, shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
+
+
+
     dataloader = test_dataloader
     model = torch.load(save_dir+'/model.pth', map_location=device)
     model_state_dict = torch.load(save_dir+'/model_state_dict.pth')['model_state_dict']
     model.load_state_dict(model_state_dict)
     model.eval()
+    EPOCH = 1
 
 # criterion = CrossEntropyLoss(weight=torch.Tensor(BCE_WEIGHTS))
 criterion = BCEWithLogitsLoss()
@@ -123,13 +127,19 @@ total_val_loss = []
 best_loss = 1000
 
 # Training loop
-for epoch in range(30):
+
+for epoch in range(EPOCH):
     print('epoch: ', epoch)
+    y_list = []
+    pred_list = []
     
     with tqdm(dataloader, unit='batch') as tepoch:
         batch_loss = 0
         for idx, (img, y) in enumerate(tepoch):
             optimizer.zero_grad()
+
+            img = img.to(device)
+            y = y.to(device)
             
             # img = (BS, 70, 512, 512)
             batch_size = img.shape[0]
@@ -137,35 +147,22 @@ for epoch in range(30):
             y = y.unsqueeze(1)
             
             
-            pred = model(img)
+            pred, seg = model(img)
+            print(seg.shape)
+            quit()
 
             loss = criterion(pred, y)
             tepoch.set_postfix(loss=loss.item())
             loss.backward()
             optimizer.step()
 
+            if args.m == 2:
+                y_list = np.append(y_list, y.cpu().detach().numpy())
+                pred_list = np.append(pred_list, pred.cpu().detach().numpy())
+
             batch_loss += loss.item() / batch_size
 
-            if args.m == 2:
-                
-                fig, axes = plt.subplots(1, 1, figsize=(12, 12))
-                axes = axes.ravel()
 
-                fpr, tpr, thresholds = roc_curve(y, pred)
-                roc_auc = auc(fpr, tpr)
-                    
-                axes[0].plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
-                axes[0].plot([0, 1], [0, 1], 'k--')
-                axes[0].set_xlim([0.0, 1.0])
-                axes[0].set_ylim([0.0, 1.05])
-                axes[0].set_xlabel('False Positive Rate')
-                axes[0].set_ylabel('True Positive Rate')
-                axes[0].set_title(f'ROC Curve for ONJ classification')
-                axes[0].legend(loc='lower right')
-                
-                plt.tight_layout()
-                plt.savefig(save_dir+f'/test.jpg')
-                plt.close()
 
         batch_loss /= idx
         total_loss = np.append(total_loss, batch_loss)
@@ -188,7 +185,7 @@ for epoch in range(30):
                 val_pred = model(val_img)
                 val_loss = criterion(val_pred, val_y)
                 val_batch_loss += val_loss.item() / val_batch_size
-                
+
             val_batch_loss /= val_idx
 
             total_val_loss = np.append(total_val_loss, val_batch_loss)
@@ -208,19 +205,39 @@ for epoch in range(30):
                 pass
         
             
-    print('train loss: ', batch_loss, 'val loss: ', val_batch_loss)
+        print('train loss: ', batch_loss, 'val loss: ', val_batch_loss)
+            
+
+        total_loss = np.array(total_loss)
+        total_val_loss = np.array(total_val_loss)
+
+        plt.plot(total_loss, label='train')
+        plt.plot(total_val_loss, label='val')
+        plt.legend()
+        plt.savefig(save_dir+'/train_loss.jpg')
+        plt.close()
+
+
+if args.m == 2:
+    print(y_list.shape, pred_list.shape)
+    fig = plt.figure()
+    ax = fig.add_subplot(1,1,1)
+
+    fpr, tpr, thresholds = roc_curve(y_list, pred_list)
+    roc_auc = auc(fpr, tpr)
         
-
-    total_loss = np.array(total_loss)
-    total_val_loss = np.array(total_val_loss)
-
-    plt.plot(total_loss, label='train')
-    plt.plot(total_val_loss, label='val')
-    plt.legend()
-    plt.savefig(save_dir+'/train_loss.jpg')
+    ax.plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
+    ax.plot([0, 1], [0, 1], 'k--')
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title(f'ROC Curve for ONJ classification')
+    ax.legend(loc='lower right')
+    
+    plt.tight_layout()
+    plt.savefig(save_dir+f'/test.jpg')
     plt.close()
-
-
 
 
 

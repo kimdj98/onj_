@@ -64,6 +64,8 @@ class UpConv3DBlock(nn.Module):
 
     def __init__(self, in_channels, res_channels=0, last_layer=False, num_classes=None) -> None:
         super(UpConv3DBlock, self).__init__()
+
+
         assert (last_layer==False and num_classes==None) or (last_layer==True and num_classes!=None), 'Invalid arguments'
         self.upconv1 = nn.ConvTranspose3d(in_channels=in_channels, out_channels=in_channels, kernel_size=(2, 2, 2), stride=2)
         self.relu = nn.ReLU()
@@ -111,6 +113,8 @@ class UNet3D(nn.Module):
         self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
         self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
 
+        self.final_conv = nn.Conv3d(64, num_classes, kernel_size=1)
+
         self.global_avg_pool = nn.AdaptiveAvgPool3d(1)
 
         self.linear = nn.Sequential(
@@ -129,15 +133,16 @@ class UNet3D(nn.Module):
 
         # print(out.shape) #(1, 512, 8, 64, 64)
         
-        out = self.global_avg_pool(out)
-        out = torch.flatten(out, 1)
-        out = self.linear(out)
+        ### For classification output
+        out_cls = self.global_avg_pool(out)
+        out_cls = torch.flatten(out_cls, 1)
+        out_cls = self.linear(out_cls)
 
         #Synthesis path forward feed
-        # out = self.s_block3(out, residual_level3)
-        # out = self.s_block2(out, residual_level2)
-        # out = self.s_block1(out, residual_level1)
-        return out
+        out_seg = self.s_block3(out, residual_level3)
+        out_seg = self.s_block2(out_seg, residual_level2)
+        out_seg = self.s_block1(out_seg, residual_level1)
+        return out_cls, out_seg
 
 
 
