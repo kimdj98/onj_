@@ -109,9 +109,9 @@ class UNet3D(nn.Module):
         self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
         self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
         self.bottleNeck = Conv3DBlock(in_channels=level_3_chnls, out_channels=bottleneck_channel, bottleneck= True)
-        self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
-        self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
-        self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
+        # self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
+        # self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
+        # self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
 
         self.final_conv = nn.Conv3d(64, num_classes, kernel_size=1)
 
@@ -139,9 +139,10 @@ class UNet3D(nn.Module):
         out_cls = self.linear(out_cls)
 
         #Synthesis path forward feed
-        out_seg = self.s_block3(out, residual_level3)
-        out_seg = self.s_block2(out_seg, residual_level2)
-        out_seg = self.s_block1(out_seg, residual_level1)
+        # out_seg = self.s_block3(out, residual_level3)
+        # out_seg = self.s_block2(out_seg, residual_level2)
+        # out_seg = self.s_block1(out_seg, residual_level1)
+        out_seg = out_cls
         return out_cls, out_seg
 
 

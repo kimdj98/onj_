@@ -53,7 +53,7 @@ from scipy.ndimage import zoom
 
 
 
-save_dir = 'dataset_processed/'
+save_dir = 'dataset_processed_256/'
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
@@ -250,8 +250,8 @@ def main(cfg:DictConfig):
             print('original size: ', img_3d.shape, ONJ_class)
             ## image preprocessing
             depth_ratio = 64 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
-            wh_ratio1 = 512 / img_3d.shape[1] #desired depth = 512 (empirically chosen)
-            wh_ratio2 = 512 / img_3d.shape[2]
+            wh_ratio1 = 256 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
+            wh_ratio2 = 256 / img_3d.shape[2]
 
             resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
             resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio1, wh_ratio2))

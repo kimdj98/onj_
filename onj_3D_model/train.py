@@ -20,6 +20,8 @@ import argparse
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
+import torch.distributed as dist
+
 np.random.seed(555)
 torch.manual_seed(555)
 
@@ -30,7 +32,7 @@ parser.add_argument('--gpu', '-g', default=0, type=int)
 parser.add_argument('--exp', '-exp', type=str, help='exp name')
 args = parser.parse_args()
 
-os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
+# os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 data_dir = 'dataset_processed'
@@ -91,8 +93,18 @@ class CustomDataset(Dataset):
 
 
 
+### distributed data parallel
 
-model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).to(device)
+dist.init_process_group("nccl")
+local_rank = torch.distributed.get_rank()
+torch.cuda.set_device(local_rank)
+
+dist.destroy_process_group()
+
+dist.init_process_group(backend='nccl')
+model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).cuda(local_rank)
+model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+
 
 if args.m == 1:
     train_dataset = CustomDataset('train')
@@ -147,9 +159,7 @@ for epoch in range(EPOCH):
             y = y.unsqueeze(1)
             
             
-            pred, seg = model(img)
-            print(seg.shape)
-            quit()
+            pred, _ = model(img)
 
             loss = criterion(pred, y)
             tepoch.set_postfix(loss=loss.item())
