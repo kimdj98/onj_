@@ -159,9 +159,9 @@ transforms = Compose(
 
 
         # ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
-        ScaleIntensityRangePercentilesd(
-            keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
-        ),  # emperically known to be better than ScaleIntensityRanged
+        # ScaleIntensityRangePercentilesd(
+        #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
+        # ),  # emperically known to be better than ScaleIntensityRanged
         # Rotate90d(keys=["image"], spatial_axes=(0, 1)),
         # Resized(keys=["image"], spatial_size=(dim_x, dim_y, -1), mode="trilinear"),
         # ToTensord(keys=["image"]),
@@ -256,6 +256,7 @@ def main(cfg:DictConfig):
             resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
             resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio1, wh_ratio2))
 
+            print(resized_img_3d)
             data_total.append(resized_img_3d)
             label_total.append(label)
             print(resized_img_3d.shape)

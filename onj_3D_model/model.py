@@ -121,7 +121,14 @@ class UNet3D(nn.Module):
             nn.Linear(bottleneck_channel, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(256, 1),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+            
         )
     
     def forward(self, input):
@@ -137,6 +144,7 @@ class UNet3D(nn.Module):
         out_cls = self.global_avg_pool(out)
         out_cls = torch.flatten(out_cls, 1)
         out_cls = self.linear(out_cls)
+
 
         #Synthesis path forward feed
         # out_seg = self.s_block3(out, residual_level3)

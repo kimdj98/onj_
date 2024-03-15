@@ -35,9 +35,10 @@ args = parser.parse_args()
 # os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-data_dir = 'dataset_processed'
+data_dir = 'dataset_processed_256' ## this data is unnormalized data
 save_dir = f'results/{args.exp}'
 BATCH_SIZE = 1
+ACCUMULATION_STEPS=4
 IN_CHANNELS = 1 # channel 
 BCE_WEIGHTS = [0.004, 0.996]
 
@@ -62,6 +63,8 @@ class CustomDataset(Dataset):
 
             self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
             self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
+
+
         elif split in ['test', 'val']:
             
             self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
@@ -71,8 +74,28 @@ class CustomDataset(Dataset):
                 self.Y = self.Y[:10]
 
 
-        # self.img = torch.Tensor(self.img).float().to(device)
-        # self.Y = torch.Tensor(self.Y).float().to(device)
+
+        lb = np.percentile(self.img, 1)
+        ub = np.percentile(self.img, 99)
+        self.img = np.clip(self.img, lb, ub)
+
+        ## standardization (z-score normalization)
+        mean = np.mean(self.img)
+        std = np.std(self.img)
+        self.img = (self.img - mean) / std
+
+        ## robust scaling
+        # median = np.median(self.img)
+        # q1 = np.percentile(self.img, 25)
+        # q3 = np.percentile(self.img, 75)
+        # iqr = q3 - q1
+        # self.img = (self.img - median) / iqr
+
+        ## log transformation
+        # self.img = self.img + 1e-6
+        # self.img = np.log(self.img)
+
+
         
     def __len__(self):
         return len(self.img)
@@ -103,7 +126,7 @@ dist.destroy_process_group()
 
 dist.init_process_group(backend='nccl')
 model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).cuda(local_rank)
-model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
 
 
 if args.m == 1:
@@ -125,12 +148,16 @@ elif args.m == 2:
     model = torch.load(save_dir+'/model.pth', map_location=device)
     model_state_dict = torch.load(save_dir+'/model_state_dict.pth')['model_state_dict']
     model.load_state_dict(model_state_dict)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
+
+    model = model.cuda(local_rank)
+
     model.eval()
     EPOCH = 1
 
 # criterion = CrossEntropyLoss(weight=torch.Tensor(BCE_WEIGHTS))
-criterion = BCEWithLogitsLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+criterion = torch.nn.BCELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 0.95**epoch, last_epoch=-1, verbose=False)
 
 
@@ -150,6 +177,7 @@ for epoch in range(EPOCH):
         for idx, (img, y) in enumerate(tepoch):
             optimizer.zero_grad()
 
+
             img = img.to(device)
             y = y.to(device)
             
@@ -161,12 +189,18 @@ for epoch in range(EPOCH):
             
             pred, _ = model(img)
 
-            loss = criterion(pred, y)
+            loss = criterion(pred, y) / ACCUMULATION_STEPS
             tepoch.set_postfix(loss=loss.item())
             loss.backward()
-            optimizer.step()
+
+            if (idx + 1) % ACCUMULATION_STEPS == 0 or (idx + 1) == len(dataloader):
+                optimizer.step()  # Perform an optimization step
+                optimizer.zero_grad()  # Clear the gradients
+
 
             if args.m == 2:
+                # pred = torch.sigmoid(pred)
+                # pred = (pred>=0.5).long()
                 y_list = np.append(y_list, y.cpu().detach().numpy())
                 pred_list = np.append(pred_list, pred.cpu().detach().numpy())
 
@@ -185,6 +219,9 @@ for epoch in range(EPOCH):
             for val_idx, (val_img, val_y) in enumerate(val_dataloader):
 
                 batch_size = img.shape[0]
+                val_img = val_img.to(device)
+                val_y = val_y.to(device)
+
                 img = img.unsqueeze(1)
                 y = y.unsqueeze(1)
             
@@ -192,7 +229,7 @@ for epoch in range(EPOCH):
                 val_batch_size = val_img.shape[0]
                 val_img = val_img.unsqueeze(1)
                 val_y = val_y.unsqueeze(1)
-                val_pred = model(val_img)
+                val_pred, _ = model(val_img)
                 val_loss = criterion(val_pred, val_y)
                 val_batch_loss += val_loss.item() / val_batch_size
 
@@ -230,6 +267,8 @@ for epoch in range(EPOCH):
 
 if args.m == 2:
     print(y_list.shape, pred_list.shape)
+
+    
     fig = plt.figure()
     ax = fig.add_subplot(1,1,1)
 
