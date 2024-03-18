@@ -52,8 +52,8 @@ from scipy.ndimage import zoom
 # data_dict_ONJ_CBCT_sagittal = load_data_dict(conf, modal="CBCT", dir="sagittal", type="ONJ_labeling")
 
 
-
-save_dir = 'dataset_processed_256/'
+size = 512
+save_dir = f'dataset_processed_{str(size)}/'
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
@@ -114,6 +114,13 @@ class LoadJsonLabeld(MapTransform):
             t = torch.zeros((total_slices, 5))
             data["label"] = t
             return data
+        onj_class = label_path.parent.parent.parent.parent.parent.name
+        if "Non_ONJ" in onj_class:
+            t = torch.zeros((total_slices, 5))
+            data["label"] = t
+            return data
+
+
 
         with open(label_path, "r") as file:
             labels = json.load(file)
@@ -155,13 +162,13 @@ transforms = Compose(
         ExtractSliced(keys=["image"]),
         
         
-        # LoadJsonLabeld(keys=["label"]),  # Use the custom transform for labels
+        LoadJsonLabeld(keys=["label"]),  # Use the custom transform for labels
 
 
         # ScaleIntensityRanged(keys=["image"], a_min=-1000, a_max=3000, b_min=0.0, b_max=1.0, clip=True),
-        ScaleIntensityRangePercentilesd(
-            keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
-        ),  # emperically known to be better than ScaleIntensityRanged
+        # ScaleIntensityRangePercentilesd(
+        #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
+        # ),  # emperically known to be better than ScaleIntensityRanged
         # Rotate90d(keys=["image"], spatial_axes=(0, 1)),
         # Resized(keys=["image"], spatial_size=(dim_x, dim_y, -1), mode="trilinear"),
         # ToTensord(keys=["image"]),
@@ -186,6 +193,15 @@ def main(cfg:DictConfig):
     train_label = []
     val_label = []
     test_label = []
+
+    train_seg = []
+    val_seg = []
+    test_seg = []
+
+    train_total_org = {}
+    val_total_org = {}
+    test_total_org = {}
+
     count_train = 0
     count_val = 0
     count_test = 0
@@ -193,6 +209,7 @@ def main(cfg:DictConfig):
     count_nonj = 0
 
     for patient in tqdm(dataset):
+
 
         modal_dir = patient["name"].name
         date = patient["name"].parent.name
@@ -209,24 +226,32 @@ def main(cfg:DictConfig):
                 split = "train"
                 data_total = train_total 
                 label_total = train_label
+                seg_total = train_seg
                 count_train += 1
+                count = count_train
+                data_total_org = train_total_org
 
             elif patient_name in val:
                 split = "val"
                 data_total = val_total 
                 label_total = val_label
+                seg_total = val_seg
                 count_val += 1
+                count = count_val
+                data_total_org = val_total_org
 
             elif patient_name in test:
                 split = "test"
                 data_total = test_total 
                 label_total = test_label
+                seg_total = test_seg
                 count_test += 1
+                count = count_test
+                data_total_org = test_total_org
 
             else:
                 print("patient not in split file")
                 continue
-            
 
             ## uncomment below line when not using transforms
             # img_obj = nib.load(patient["image"]) ## (512, 512, 190)
@@ -235,7 +260,29 @@ def main(cfg:DictConfig):
             img_3d = patient["image"].squeeze(0) # (512, 512, 91)
 
             #convert to channel-first numpy array # for 3D U-Net input
-            img_3d = np.moveaxis(img_3d, -1, 0)
+            img_3d = np.moveaxis(img_3d, -1, 0) #(91, 512, 512)
+
+            if str(ONJ_class) == 'ONJ_labeling':
+
+                ## label segmentation
+                seg_3d_label = patient["label"]
+                seg_3d_mask = np.zeros((img_3d.shape), dtype=np.uint8) #(91, 5)
+
+                for slice_num in range(seg_3d_label.shape[0]):
+                    onj_exist = seg_3d_label[slice_num][0]
+
+                    x,y,w,h = seg_3d_label[slice_num][1:] * img_3d.shape[1]
+                    x = int(x)
+                    y = int(y)
+                    w = int(w)
+                    h = int(h)
+                    # print(onj_exist, x, y, w, h)
+                    if int(onj_exist) == 1:
+                        seg_3d_mask[slice_num, y:y+h, x:x+w] = 1
+                        
+            elif str(ONJ_class) == 'Non_ONJ':
+                seg_3d_mask = np.zeros((img_3d.shape), dtype=np.uint8)
+
             
             ## get label data  ## classification label
             if "ONJ_labeling" in ONJ_class:
@@ -248,17 +295,23 @@ def main(cfg:DictConfig):
                 print(ONJ_class)
 
             print('original size: ', img_3d.shape, ONJ_class)
+
+            data_total_org[f'{count}'] = img_3d
             ## image preprocessing
             depth_ratio = 64 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
-            wh_ratio1 = 256 / img_3d.shape[1] #desired depth = 256 (empirically chosen)
-            wh_ratio2 = 256 / img_3d.shape[2]
+            wh_ratio1 = size / img_3d.shape[1] #desired depth = size (empirically chosen)
+            wh_ratio2 = size / img_3d.shape[2]
 
             resliced_img_3d = zoom(img_3d, (depth_ratio, 1, 1))
             resized_img_3d = zoom(resliced_img_3d, (1, wh_ratio1, wh_ratio2))
 
+            resliced_seg_3d = zoom(seg_3d_mask, (depth_ratio, 1, 1))
+            resized_seg_3d = zoom(resliced_seg_3d, (1, wh_ratio1, wh_ratio2))
+
             data_total.append(resized_img_3d)
             label_total.append(label)
-            print(resized_img_3d.shape)
+            seg_total.append(resized_seg_3d)
+
         print(count_train, count_val, count_test)
 
 
@@ -267,26 +320,41 @@ def main(cfg:DictConfig):
     train_total = np.stack(train_total, axis=0)
     train_label = np.stack(train_label, axis=0)
 
-    val_total = np.stack(val_total, axis=0)
-    val_label = np.stack(val_label, axis=0)
+    # val_total = np.stack(val_total, axis=0)
+    # val_label = np.stack(val_label, axis=0)
     
-    test_total = np.stack(test_total, axis=0)
-    test_label = np.stack(test_label, axis=0)
+    # test_total = np.stack(test_total, axis=0)
+    # test_label = np.stack(test_label, axis=0)
 
-    print(train_total.shape)
-    print(val_total.shape)
-    print(test_total.shape)
-    print(train_label)
+    # train_seg = np.stack(train_seg, axis=0)
+    # val_seg = np.stack(val_seg, axis=0)
+    # test_seg = np.stack(test_seg, axis=0)
 
-    np.save(save_dir+'train_total.npy', train_total)
-    np.save(save_dir+'train_label.npy', train_label)
+    # print(train_total.shape)
+    # print(val_total.shape)
+    # print(test_total.shape)
+    # print(train_label)
 
-    np.save(save_dir+'val_total.npy', val_total)
-    np.save(save_dir+'val_label.npy', val_label)
+    # print(train_seg.shape)
+
+    # np.save(save_dir+'train_total.npy', train_total)
+    # np.save(save_dir+'train_label.npy', train_label)
+
+    # np.save(save_dir+'val_total.npy', val_total)
+    # np.save(save_dir+'val_label.npy', val_label)
     
-    np.save(save_dir+'test_total.npy', test_total)
-    np.save(save_dir+'test_label.npy', test_label)
+    # np.save(save_dir+'test_total.npy', test_total)
+    # np.save(save_dir+'test_label.npy', test_label)
     
+    # np.save(save_dir+'train_seg.npy', train_seg)
+    # np.save(save_dir+'val_seg.npy', val_seg)
+    # np.save(save_dir+'test_seg.npy', test_seg)
+
+    # Save all scans in a single .npz file
+    np.savez("train_total_org.npz", **train_total_org)
+    np.savez("val_total_org.npz", **val_total_org)
+    np.savez("test_total_org.npz", **test_total_org)
+
     # quit()
 
 

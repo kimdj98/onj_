@@ -10,6 +10,7 @@ sa.png
 *.npy
 *.pth
 *.jpg
+*.npz
 
 deleted/
 .vscode/

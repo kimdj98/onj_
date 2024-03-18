@@ -207,6 +207,17 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
 
     include_name = cfg.data.data_generation
     data_dicts = []
+    file_count = 0
+    ## 1. NONJ, 2. ONJ
+    
+    for patient in DATAPATH_ONJ.glob("*"):
+        print(patient)
+        
+        # if file_count <= 10:
+        #     file_count+= 1
+        if patient.name not in ["EW-0070"]:
+            helper_function(patient, "CBCT", data_dicts, include_name=include_name)
+            helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
     file_count = 0
     for patient in DATAPATH_NONJ.glob("*"):
@@ -217,14 +228,9 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
             helper_function(patient, "CBCT", data_dicts, include_name=include_name)
             helper_function(patient, "MDCT", data_dicts, include_name=include_name)
 
-    file_count = 0
-    for patient in DATAPATH_ONJ.glob("*"):
-        print(patient)
-        
-        # if file_count <= 10:
-        #     file_count+= 1
-        helper_function(patient, "CBCT", data_dicts, include_name=include_name)
-        helper_function(patient, "MDCT", data_dicts, include_name=include_name)
+
+
+
 
     return data_dicts
 

@@ -23,6 +23,28 @@ class Conv3DBlock(nn.Module):
     :return -> Tensor
     """
 
+    # def __init__(self, in_channels, out_channels, bottleneck = False) -> None:
+    #     super(Conv3DBlock, self).__init__()
+    #     self.conv1 = nn.Conv3d(in_channels= in_channels, out_channels=out_channels//2, kernel_size=(3,3,3), padding=1)
+    #     self.bn1 = nn.BatchNorm3d(num_features=out_channels//2)
+    #     self.conv2 = nn.Conv3d(in_channels= out_channels//2, out_channels=out_channels, kernel_size=(3,3,3), padding=1)
+    #     self.bn2 = nn.BatchNorm3d(num_features=out_channels)
+    #     self.relu = nn.ReLU()
+    #     self.bottleneck = bottleneck
+    #     if not bottleneck:
+    #         self.pooling = nn.MaxPool3d(kernel_size=(2,2,2), stride=2)
+
+    
+    # def forward(self, input):
+    #     res = self.relu(self.bn1(self.conv1(input)))
+    #     res = self.relu(self.bn2(self.conv2(res)))
+    #     out = None
+    #     if not self.bottleneck:
+    #         out = self.pooling(res)
+    #     else:
+    #         out = res
+    #     return out, res
+
     def __init__(self, in_channels, out_channels, bottleneck = False) -> None:
         super(Conv3DBlock, self).__init__()
         self.conv1 = nn.Conv3d(in_channels= in_channels, out_channels=out_channels//2, kernel_size=(3,3,3), padding=1)
@@ -44,7 +66,6 @@ class Conv3DBlock(nn.Module):
         else:
             out = res
         return out, res
-
 
 
 
@@ -85,9 +106,6 @@ class UpConv3DBlock(nn.Module):
         if self.last_layer: out = self.conv3(out)
         return out
         
-
-
-
 class UNet3D(nn.Module):
     """
     The 3D UNet model
@@ -109,47 +127,85 @@ class UNet3D(nn.Module):
         self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
         self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
         self.bottleNeck = Conv3DBlock(in_channels=level_3_chnls, out_channels=bottleneck_channel, bottleneck= True)
-        # self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
-        # self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
-        # self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
+        self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
+        self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
+        self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
 
-        self.final_conv = nn.Conv3d(64, num_classes, kernel_size=1)
+
+        ### CHANNEL RESIZE
+        # level_1_chnls, level_2_chnls, level_3_chnls = 4, 16, 32
+        # bottleneck_channel = 64
+        # self.a_block1 = Conv3DBlock(in_channels=in_channels, out_channels=level_1_chnls)
+        # self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
+        # self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
+        # # self.a_block4 = Conv3DBlock(in_channels=32, out_channels=64)
+        # # self.a_block5 = Conv3DBlock(in_channels=64, out_channels=128)
+
+        # self.bottleNeck = Conv3DBlock(in_channels=32, out_channels=bottleneck_channel, bottleneck= True)
+        # # self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
+        # # self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
+        # # self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
+        ##### CHANNEL RESIZE
 
         self.global_avg_pool = nn.AdaptiveAvgPool3d(1)
 
+        # self.linear = nn.Sequential(
+        #     nn.Linear(bottleneck_channel, 256),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(256, 128),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(128, 64),
+        #     nn.ReLU(),
+        #     nn.Linear(64, 1),
+        #     nn.Sigmoid(),
+            
+        # )
+
+        ### CHANNEL RESIZE
         self.linear = nn.Sequential(
-            nn.Linear(bottleneck_channel, 256),
+            nn.Linear(bottleneck_channel, 32),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 1),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+            
         )
-    
+
+
     def forward(self, input):
         #Analysis path forward feed
         out, residual_level1 = self.a_block1(input)
         out, residual_level2 = self.a_block2(out)
         out, residual_level3 = self.a_block3(out)
+
+        # out, residual_level4 = self.a_block4(out)
+        # out, residual_level5 = self.a_block5(out)
+
+        # out, residual_level4 = self.a_block4(out)
         out, _ = self.bottleNeck(out)
 
         # print(out.shape) #(1, 512, 8, 64, 64)
+        # quit()
         
         ### For classification output
         out_cls = self.global_avg_pool(out)
         out_cls = torch.flatten(out_cls, 1)
         out_cls = self.linear(out_cls)
 
+
         #Synthesis path forward feed
-        # out_seg = self.s_block3(out, residual_level3)
-        # out_seg = self.s_block2(out_seg, residual_level2)
-        # out_seg = self.s_block1(out_seg, residual_level1)
-        out_seg = out_cls
+        out_seg = self.s_block3(out, residual_level3)
+        out_seg = self.s_block2(out_seg, residual_level2)
+        out_seg = self.s_block1(out_seg, residual_level1)
         return out_cls, out_seg
 
 
 
 if __name__ == '__main__':
     #Configurations according to the Xenopus kidney dataset
-    model = UNet3D(in_channels=3, num_classes=1)
+    model = UNet3D(in_channels=1, num_classes=1)
     start_time = time.time()
-    summary(model=model, input_size=(3, 16, 128, 128), batch_size=-1, device="cpu")
+    # summary(model=model, input_size=(3, 16, 128, 128), batch_size=-1, device="cpu")
+    summary(model=model, input_size=(1, 1, 64, 256, 256), batch_size=-1, device="cpu")
     print("--- %s seconds ---" % (time.time() - start_time))
