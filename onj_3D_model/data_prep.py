@@ -308,6 +308,7 @@ def main(cfg:DictConfig):
             resliced_seg_3d = zoom(seg_3d_mask, (depth_ratio, 1, 1))
             resized_seg_3d = zoom(resliced_seg_3d, (1, wh_ratio1, wh_ratio2))
 
+            print(resized_img_3d)
             data_total.append(resized_img_3d)
             label_total.append(label)
             seg_total.append(resized_seg_3d)

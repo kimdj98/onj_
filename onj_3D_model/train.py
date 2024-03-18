@@ -41,7 +41,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 data_dir = 'dataset_processed_256' ## this data is unnormalized data
 save_dir = f'results/{args.exp}'
 BATCH_SIZE = 1
-ACCUMULATION_STEPS=16 ## Due to GPU memory, choose batch size 1 but accumulate gradients for the same effect as using batch
+ACCUMULATION_STEPS=4
 IN_CHANNELS = 1 # channel 
 BCE_WEIGHTS = [0.004, 0.996]
 
@@ -206,6 +206,7 @@ dist.destroy_process_group()
 
 dist.init_process_group(backend='nccl')
 model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).cuda(local_rank)
+model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
 model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
 
 
