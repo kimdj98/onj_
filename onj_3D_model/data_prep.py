@@ -352,9 +352,9 @@ def main(cfg:DictConfig):
     # np.save(save_dir+'test_seg.npy', test_seg)
 
     # Save all scans in a single .npz file
-    np.savez("train_total_org.npz", **train_total_org)
-    np.savez("val_total_org.npz", **val_total_org)
-    np.savez("test_total_org.npz", **test_total_org)
+    np.savez(save_dir+"/train_total_org.npz", **train_total_org)
+    np.savez(save_dir+"/val_total_org.npz", **val_total_org)
+    np.savez(save_dir+"/test_total_org.npz", **test_total_org)
 
     # quit()
 

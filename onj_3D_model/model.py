@@ -122,29 +122,29 @@ class UNet3D(nn.Module):
     
     def __init__(self, in_channels, num_classes, level_channels=[64, 128, 256], bottleneck_channel=512) -> None:
         super(UNet3D, self).__init__()
-        level_1_chnls, level_2_chnls, level_3_chnls = level_channels[0], level_channels[1], level_channels[2]
-        self.a_block1 = Conv3DBlock(in_channels=in_channels, out_channels=level_1_chnls)
-        self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
-        self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
-        self.bottleNeck = Conv3DBlock(in_channels=level_3_chnls, out_channels=bottleneck_channel, bottleneck= True)
-        self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
-        self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
-        self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
-
-
-        ### CHANNEL RESIZE
-        # level_1_chnls, level_2_chnls, level_3_chnls = 4, 16, 32
-        # bottleneck_channel = 64
+        # level_1_chnls, level_2_chnls, level_3_chnls = level_channels[0], level_channels[1], level_channels[2]
         # self.a_block1 = Conv3DBlock(in_channels=in_channels, out_channels=level_1_chnls)
         # self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
         # self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
-        # # self.a_block4 = Conv3DBlock(in_channels=32, out_channels=64)
-        # # self.a_block5 = Conv3DBlock(in_channels=64, out_channels=128)
+        # self.bottleNeck = Conv3DBlock(in_channels=level_3_chnls, out_channels=bottleneck_channel, bottleneck= True)
+        # self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
+        # self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
+        # self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
 
-        # self.bottleNeck = Conv3DBlock(in_channels=32, out_channels=bottleneck_channel, bottleneck= True)
-        # # self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
-        # # self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
-        # # self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
+
+        ### CHANNEL RESIZE
+        level_1_chnls, level_2_chnls, level_3_chnls = 4, 16, 32
+        bottleneck_channel = 64
+        self.a_block1 = Conv3DBlock(in_channels=in_channels, out_channels=level_1_chnls)
+        self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
+        self.a_block3 = Conv3DBlock(in_channels=level_2_chnls, out_channels=level_3_chnls)
+        # self.a_block4 = Conv3DBlock(in_channels=32, out_channels=64)
+        # self.a_block5 = Conv3DBlock(in_channels=64, out_channels=128)
+
+        self.bottleNeck = Conv3DBlock(in_channels=32, out_channels=bottleneck_channel, bottleneck= True)
+        self.s_block3 = UpConv3DBlock(in_channels=bottleneck_channel, res_channels=level_3_chnls)
+        self.s_block2 = UpConv3DBlock(in_channels=level_3_chnls, res_channels=level_2_chnls)
+        self.s_block1 = UpConv3DBlock(in_channels=level_2_chnls, res_channels=level_1_chnls, num_classes=num_classes, last_layer=True)
         ##### CHANNEL RESIZE
 
         self.global_avg_pool = nn.AdaptiveAvgPool3d(1)
@@ -168,12 +168,10 @@ class UNet3D(nn.Module):
             nn.Linear(bottleneck_channel, 32),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(256, 128),
+            nn.Linear(32, 16),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(16, 1),
             nn.Sigmoid(),
             
         )
@@ -213,5 +211,5 @@ if __name__ == '__main__':
     model = UNet3D(in_channels=1, num_classes=1)
     start_time = time.time()
     # summary(model=model, input_size=(3, 16, 128, 128), batch_size=-1, device="cpu")
-    summary(model=model, input_size=(1, 1, 64, 256, 256), batch_size=-1, device="cpu")
+    summary(model=model, input_size=(1, 1, 64, 512, 512), batch_size=-1, device="cpu")
     print("--- %s seconds ---" % (time.time() - start_time))
