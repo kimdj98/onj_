@@ -18,11 +18,13 @@ from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
 from model import UNet3D
 import argparse
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from sklearn.metrics import roc_curve, auc
 
 import torch.distributed as dist
 
 import SimpleITK as sitk
+from scipy.ndimage import zoom
 
 
 np.random.seed(555)
@@ -44,6 +46,7 @@ BATCH_SIZE = 1
 ACCUMULATION_STEPS=4
 IN_CHANNELS = 1 # channel 
 BCE_WEIGHTS = [0.004, 0.996]
+size = 512
 
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
@@ -111,40 +114,68 @@ class CustomDataset(Dataset):
     def __init__(self, split):
         if split == 'train':
 
-            self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
-            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
-
-            ### original slices
-            # self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
+            # self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
             # self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
             # self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
+
+            ### original slices
+            self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
+            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
+            self.seg = np.load(data_dir+f'/{split}_total_seg_org.npz', mmap_mode='r')
+            # print(len(self.img))
+            # print(len(self.seg))
+            # print(len(self.Y))
+            # quit()
 
         elif split in ['test', 'val']:
             
-            self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
-            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
-
-            # self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
+            # self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
             # self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
             # self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
 
+            self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
+            self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
+            self.seg = np.load(data_dir+f'/{split}_total_seg_org.npz', mmap_mode='r')
+
             if split == 'val':
-                self.img = self.img[:10]
+                tmp = {}
+                tmp_seg = {}
+                for i, key in enumerate(self.img):
+                    if i < 10:
+                        img_component = self.img[key]
+                        seg_component = self.seg[key]
+                        tmp[f'{i+1}'] = img_component
+                        tmp_seg[f'{i+1}'] = seg_component
+
+                self.img = tmp
                 self.Y = self.Y[:10]
-                self.seg = self.seg[:10]
+                self.seg = tmp_seg
 
 
 
-        lb = np.percentile(self.img, 1)
-        ub = np.percentile(self.img, 99)
-        self.img = np.clip(self.img, lb, ub)
+        # lb = np.percentile(self.img, 1)
+        # ub = np.percentile(self.img, 99)
+        # self.img = np.clip(self.img, lb, ub)
 
         ## standardization (z-score normalization)
-        self.mean = np.mean(self.img)
-        self.std = np.std(self.img)
-        self.img = (self.img - self.mean) / self.std
+
+        ### FOR NON ORG FILE
+        # self.mean = np.mean(self.img)
+        # self.std = np.std(self.img)
+        # self.img = (self.img - self.mean) / self.std
+
+        ### FOR ORG FILE (NPZ)
+        mean_values={}
+        std_values={}
+        for key in self.img:
+            mean_value = np.mean(self.img[key])
+            mean_values[key] = mean_value
+            std_value = np.std(self.img[key])
+            std_values[key] = std_value 
+
+        self.mean = np.mean(list(mean_values.values()))
+        self.std = np.std(list(std_values.values()))
+
 
 
 
@@ -194,55 +225,69 @@ class CustomDataset(Dataset):
         return len(self.img)
     
     def __getitem__(self, idx):
-        img_idx = self.load_data(self.img, idx)
+        img_idx = self.load_data_org(self.img, idx)
+
         img_idx = np.asarray(img_idx).astype(np.float32)
         Y_idx = self.load_data(self.Y, idx)
         Y_idx = np.asarray(Y_idx).astype(np.float32)
 
-        seg_idx = self.load_data(self.seg, idx)
+        seg_idx = self.load_data_org(self.seg, idx)
         seg_idx = np.asarray(seg_idx).astype(np.float32)
 
 
-        # current_depth = img_idx.shape[0]
-        # if current_depth < 64:
-        #     # Padding
-        #     pad_size = 64 - current_depth
-        #     pad_before = pad_size // 2
-        #     pad_after = pad_size - pad_before
-        #     img_idx_padded = np.pad(img_idx, ((pad_before, pad_after), (0, 0), (0, 0)), mode='constant', constant_values=0)
-        # elif current_depth > 64:
-        #     # Cropping or Resampling (Here we'll just crop for simplicity)
-        #     start_slice = (current_depth - 64) // 2
-        #     img_idx_padded = img_idx[start_slice:start_slice + 64, :, :]
-        # else:
-        #     img_idx_padded = img_idx
+        current_depth = img_idx.shape[0]
+        if current_depth < 64:
+            # Padding
+            pad_size = 64 - current_depth
+            pad_before = pad_size // 2
+            pad_after = pad_size - pad_before
+            img_idx_padded = np.pad(img_idx, ((pad_before, pad_after), (0, 0), (0, 0)), mode='constant', constant_values=0)
+            seg_idx_padded = np.pad(seg_idx, ((pad_before, pad_after), (0, 0), (0, 0)), mode='constant', constant_values=0)
 
-    
-        return img_idx, Y_idx, seg_idx, self.mean, self.std
+
+        elif current_depth > 64:
+            # Cropping or Resampling (Here we'll just crop for simplicity)
+            start_slice = (current_depth - 64) // 2
+            img_idx_padded = img_idx[start_slice:start_slice + 64, :, :]
+            seg_idx_padded = seg_idx[start_slice:start_slice+64, :, :]
+        else:
+            img_idx_padded = img_idx
+            seg_idx_padded = seg_idx
+
+
+        depth_ratio = 64 / img_idx_padded.shape[0] #desired depth = 70 (empirically chosen)
+        wh_ratio1 = size / img_idx_padded.shape[1] #desired depth = size (empirically chosen)
+        wh_ratio2 = size / img_idx_padded.shape[2]
+
+        img_idx_padded = zoom(img_idx_padded, (1, wh_ratio1, wh_ratio2))
+        seg_idx_padded = zoom(seg_idx_padded, (1, wh_ratio1, wh_ratio2))
+
+        return img_idx_padded, Y_idx, seg_idx_padded, self.mean, self.std
         # print(img_idx.shape)
         # quit()
         # return img_idx, Y_idx
 
     def load_data(self, mmap_array, idx):
         return mmap_array[idx]
-        # return mmap_array[f'{idx}']
+    def load_data_org(self, mmap_array, idx):
+        return mmap_array[f'{idx+1}']
 
 
 
 ### distributed data parallel
+# dist.init_process_group("nccl")
+# local_rank = torch.distributed.get_rank()
+# torch.cuda.set_device(local_rank)
 
-dist.init_process_group("nccl")
-local_rank = torch.distributed.get_rank()
-torch.cuda.set_device(local_rank)
+# dist.destroy_process_group()
 
-dist.destroy_process_group()
+# dist.init_process_group(backend='nccl')
+# model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).cuda(local_rank)
+# model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
+# model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
+######
 
-dist.init_process_group(backend='nccl')
-model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).cuda(local_rank)
-model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
-model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
-
-
+model = UNet3D(in_channels=IN_CHANNELS, num_classes = 1).to(device)
 if args.m == 1:
     train_dataset = CustomDataset('train')
     val_dataset = CustomDataset('val')
@@ -263,11 +308,14 @@ elif args.m == 2:
 
     dataloader = test_dataloader
     model = torch.load(save_dir+'/model.pth', map_location=device)
+    
     model_state_dict = torch.load(save_dir+'/model_state_dict.pth')['model_state_dict']
     model.load_state_dict(model_state_dict)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
 
-    model = model.cuda(local_rank)
+    ### FOR DATA PARALLEL
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
+    # model = model.cuda(local_rank)
+    ####
 
     model.eval()
     EPOCH = 1
@@ -299,12 +347,16 @@ for epoch in range(EPOCH):
             img = img.to(device)
             y = y.to(device)
             seg = seg.to(device)
+
+
+
             
             # img = (BS, 64, 256, 256)
             batch_size = img.shape[0]
             img = img.unsqueeze(1)
             y = y.unsqueeze(1)
             seg = seg.unsqueeze(1)
+
 
             pred, pred_seg = model(img)
 
@@ -345,6 +397,7 @@ for epoch in range(EPOCH):
 
 
                         img_GT = img_GT * std + mean
+                        seg_pred_plot = (seg_pred_plot - np.max(seg_pred_plot)) / np.mean(seg_pred_plot)
 
                         if 1 in seg_GT_plot:
                             rows = np.any(seg_GT_plot, axis=1)
@@ -357,11 +410,13 @@ for epoch in range(EPOCH):
                             fig, axes = plt.subplots(1, 2)
                             axes[0].imshow(img_GT, cmap='gray')
                             axes[0].add_patch(bbox)
-                            axes[0].title('Original')
+                            # axes[0].title('Original')
+                            axes[0].axis('off')
 
-                            axes[1].imshow(img_GT, cmap='gray')
-                            axes[1].imshow(seg_GT_plot, alpha=0.2)
-                            axes[1].title('Prediction')
+                            axes[1].imshow(img_GT, cmap='gray', alpha=0.5)
+                            axes[1].imshow(seg_pred_plot, alpha=0.2)
+                            # axes[1].title('Prediction')
+                            axes[1].axis('off')
                             plt.savefig(save_dir+f'/seg_{idx}_{slice_idx}.jpg')
                             plt.close()
 
@@ -381,7 +436,7 @@ for epoch in range(EPOCH):
         with torch.no_grad():
 
             val_batch_loss = 0
-            for val_idx, (val_img, val_y, val_seg) in enumerate(val_dataloader):
+            for val_idx, (val_img, val_y, val_seg, mean, std) in enumerate(val_dataloader):
                 val_img = val_img.to(device)
                 val_y = val_y.to(device)
                 val_seg = val_seg.to(device)

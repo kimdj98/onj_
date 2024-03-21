@@ -202,6 +202,10 @@ def main(cfg:DictConfig):
     val_total_org = {}
     test_total_org = {}
 
+    train_total_seg_org = {}
+    val_total_seg_org = {}
+    test_total_seg_org = {}
+
     count_train = 0
     count_val = 0
     count_test = 0
@@ -230,6 +234,7 @@ def main(cfg:DictConfig):
                 count_train += 1
                 count = count_train
                 data_total_org = train_total_org
+                data_total_seg_org = train_total_seg_org
 
             elif patient_name in val:
                 split = "val"
@@ -239,6 +244,7 @@ def main(cfg:DictConfig):
                 count_val += 1
                 count = count_val
                 data_total_org = val_total_org
+                data_total_seg_org = val_total_seg_org
 
             elif patient_name in test:
                 split = "test"
@@ -248,6 +254,7 @@ def main(cfg:DictConfig):
                 count_test += 1
                 count = count_test
                 data_total_org = test_total_org
+                data_total_seg_org = test_total_seg_org
 
             else:
                 print("patient not in split file")
@@ -271,11 +278,13 @@ def main(cfg:DictConfig):
                 for slice_num in range(seg_3d_label.shape[0]):
                     onj_exist = seg_3d_label[slice_num][0]
 
-                    x,y,w,h = seg_3d_label[slice_num][1:] * img_3d.shape[1]
-                    x = int(x)
-                    y = int(y)
-                    w = int(w)
-                    h = int(h)
+                    # x,y,w,h = seg_3d_label[slice_num][1:] * img_3d.shape[1]
+                    # print(seg_3d_label[slice_num])
+                    x = int(seg_3d_label[slice_num][1]*img_3d.shape[2])
+                    y = int(seg_3d_label[slice_num][2]*img_3d.shape[1])
+                    w = int(seg_3d_label[slice_num][3]*img_3d.shape[2])
+                    h = int(seg_3d_label[slice_num][4]*img_3d.shape[1])
+                    
                     # print(onj_exist, x, y, w, h)
                     if int(onj_exist) == 1:
                         seg_3d_mask[slice_num, y:y+h, x:x+w] = 1
@@ -297,6 +306,7 @@ def main(cfg:DictConfig):
             print('original size: ', img_3d.shape, ONJ_class)
 
             data_total_org[f'{count}'] = img_3d
+            data_total_seg_org[f'{count}'] = seg_3d_mask
             ## image preprocessing
             depth_ratio = 64 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
             wh_ratio1 = size / img_3d.shape[1] #desired depth = size (empirically chosen)
@@ -308,7 +318,7 @@ def main(cfg:DictConfig):
             resliced_seg_3d = zoom(seg_3d_mask, (depth_ratio, 1, 1))
             resized_seg_3d = zoom(resliced_seg_3d, (1, wh_ratio1, wh_ratio2))
 
-            print(resized_img_3d)
+            # print(resized_img_3d)
             data_total.append(resized_img_3d)
             label_total.append(label)
             seg_total.append(resized_seg_3d)
@@ -351,10 +361,14 @@ def main(cfg:DictConfig):
     # np.save(save_dir+'val_seg.npy', val_seg)
     # np.save(save_dir+'test_seg.npy', test_seg)
 
-    # Save all scans in a single .npz file
-    np.savez(save_dir+"/train_total_org.npz", **train_total_org)
-    np.savez(save_dir+"/val_total_org.npz", **val_total_org)
-    np.savez(save_dir+"/test_total_org.npz", **test_total_org)
+    # # Save all scans in a single .npz file
+    # np.savez(save_dir+"/train_total_org.npz", **train_total_org)
+    # np.savez(save_dir+"/val_total_org.npz", **val_total_org)
+    # np.savez(save_dir+"/test_total_org.npz", **test_total_org)
+
+    np.savez(save_dir+'/train_total_seg_org.npz', **train_total_seg_org)
+    np.savez(save_dir+'/val_total_seg_org.npz', **val_total_seg_org)
+    np.savez(save_dir+'/test_total_seg_org.npz', **test_total_seg_org)
 
     # quit()
 

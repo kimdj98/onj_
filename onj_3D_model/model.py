@@ -200,8 +200,10 @@ class UNet3D(nn.Module):
 
         #Synthesis path forward feed
         out_seg = self.s_block3(out, residual_level3)
+        # print(out_seg.shape, residual_level2.shape)
         out_seg = self.s_block2(out_seg, residual_level2)
         out_seg = self.s_block1(out_seg, residual_level1)
+
         return out_cls, out_seg
 
 
