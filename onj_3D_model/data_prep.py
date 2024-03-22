@@ -280,6 +280,7 @@ def main(cfg:DictConfig):
 
                     # x,y,w,h = seg_3d_label[slice_num][1:] * img_3d.shape[1]
                     # print(seg_3d_label[slice_num])
+
                     x = int(seg_3d_label[slice_num][1]*img_3d.shape[2])
                     y = int(seg_3d_label[slice_num][2]*img_3d.shape[1])
                     w = int(seg_3d_label[slice_num][3]*img_3d.shape[2])
@@ -307,6 +308,8 @@ def main(cfg:DictConfig):
 
             data_total_org[f'{count}'] = img_3d
             data_total_seg_org[f'{count}'] = seg_3d_mask
+            print(data_total_seg_org[f'{count}'].shape)
+
             ## image preprocessing
             depth_ratio = 64 / img_3d.shape[0] #desired depth = 70 (empirically chosen)
             wh_ratio1 = size / img_3d.shape[1] #desired depth = size (empirically chosen)
