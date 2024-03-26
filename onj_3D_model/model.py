@@ -122,6 +122,7 @@ class UNet3D(nn.Module):
     
     def __init__(self, in_channels, num_classes, level_channels=[64, 128, 256], bottleneck_channel=512) -> None:
         super(UNet3D, self).__init__()
+        ## original code of 3D U-Net
         # level_1_chnls, level_2_chnls, level_3_chnls = level_channels[0], level_channels[1], level_channels[2]
         # self.a_block1 = Conv3DBlock(in_channels=in_channels, out_channels=level_1_chnls)
         # self.a_block2 = Conv3DBlock(in_channels=level_1_chnls, out_channels=level_2_chnls)
@@ -149,19 +150,6 @@ class UNet3D(nn.Module):
 
         self.global_avg_pool = nn.AdaptiveAvgPool3d(1)
 
-        # self.linear = nn.Sequential(
-        #     nn.Linear(bottleneck_channel, 256),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.2),
-        #     nn.Linear(256, 128),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.2),
-        #     nn.Linear(128, 64),
-        #     nn.ReLU(),
-        #     nn.Linear(64, 1),
-        #     nn.Sigmoid(),
-            
-        # )
 
         ### CHANNEL RESIZE
         self.linear = nn.Sequential(
@@ -182,11 +170,8 @@ class UNet3D(nn.Module):
         out, residual_level1 = self.a_block1(input)
         out, residual_level2 = self.a_block2(out)
         out, residual_level3 = self.a_block3(out)
-
         # out, residual_level4 = self.a_block4(out)
         # out, residual_level5 = self.a_block5(out)
-
-        # out, residual_level4 = self.a_block4(out)
         out, _ = self.bottleNeck(out)
 
         # print(out.shape) #(1, 512, 8, 64, 64)
@@ -197,10 +182,8 @@ class UNet3D(nn.Module):
         out_cls = torch.flatten(out_cls, 1)
         out_cls = self.linear(out_cls)
 
-
         #Synthesis path forward feed
         out_seg = self.s_block3(out, residual_level3)
-        # print(out_seg.shape, residual_level2.shape)
         out_seg = self.s_block2(out_seg, residual_level2)
         out_seg = self.s_block1(out_seg, residual_level1)
 
@@ -212,6 +195,7 @@ if __name__ == '__main__':
     #Configurations according to the Xenopus kidney dataset
     model = UNet3D(in_channels=1, num_classes=1)
     start_time = time.time()
+    # Original configuration of 3D U-Net
     # summary(model=model, input_size=(3, 16, 128, 128), batch_size=-1, device="cpu")
     summary(model=model, input_size=(1, 1, 64, 512, 512), batch_size=-1, device="cpu")
     print("--- %s seconds ---" % (time.time() - start_time))
@@ -266,9 +250,7 @@ class CustomLoss(nn.Module):
         # Extract predicted bounding boxes from binary masks
         pred_bboxes = get_bounding_boxes(pred_masks_bin)
         
-        
         # Calculate bounding box regression loss
-        # print(pred_bboxes.shape, target_bboxes.shape)
         pred_bboxes = pred_bboxes.to(device)
         bbox_loss = self.smooth_l1_loss(pred_bboxes, target_bboxes)
         
