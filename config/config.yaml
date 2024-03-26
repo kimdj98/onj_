@@ -9,6 +9,13 @@
 #       size: [512, 512] # [width, height]
 #     panorama: 
 #       size: [2048, 1024] # [width, height]
+train:
+  gpu: 1
+  batch_size: 2
+  epoch: 50
+  lr: 0.00003
+  weight_decay: 0.0001
+
 
 data:
   data_version: v0 # dataset version
@@ -21,7 +28,7 @@ data:
   # split_label
   split_modal: panorama # CT, panorama
 
-  data_dir: /mnt/4TB1/onj/dataset/${data.data_version}
+  data_dir: /home/user/onj/dataset/${data.data_version}
   ONJ_dir: ${data.data_dir}/ONJ_labeling
   Non_ONJ_dir: ${data.data_dir}/Non_ONJ
   label_dir: /mnt/4TB1/onj/dataset/${data.data_version}/label_v231122/label.json
