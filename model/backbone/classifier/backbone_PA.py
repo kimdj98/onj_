@@ -17,6 +17,9 @@ import ultralytics
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics import YOLO
 
+# print colored text using colorama
+import colorama
+
 from PIL import Image, ImageDraw
 
 import torchvision.transforms as transforms
@@ -33,16 +36,16 @@ class ClassifierModel(nn.Module):
         super(ClassifierModel, self).__init__()
         # Convolutional layers to reduce channel dimensions
         # self.conv0 = nn.Conv2d(192 + 384 + 576, 128, kernel_size=1)  # Reduce channels of yolo_out_15, yolo_out_18, yolo_out_21
-        self.conv1 = nn.Conv2d(192, 128, kernel_size=1)  # Reduce channels of yolo_out_15
-        self.conv2 = nn.Conv2d(384, 128, kernel_size=1)  # Reduce channels of yolo_out_18
-        self.conv3 = nn.Conv2d(576, 128, kernel_size=1)  # Reduce channels of yolo_out_21
+        self.conv1 = nn.Conv2d(64, 32, kernel_size=1)  # Reduce channels of yolo_out_15
+        self.conv2 = nn.Conv2d(128, 64, kernel_size=1)  # Reduce channels of yolo_out_18
+        self.conv3 = nn.Conv2d(256, 128, kernel_size=1)  # Reduce channels of yolo_out_21
 
         # Assuming you've resized your features to a common size, e.g., [2, 128, 128, 64]
         self.adaptive_pool = nn.AdaptiveAvgPool2d((64, 32))
 
-        self.conv4 = nn.Conv2d(128 * 3, 64, kernel_size=1)
+        self.conv4 = nn.Conv2d(32 + 64 + 128, 32, kernel_size=1)
 
-        self.fc1 = nn.Linear(64 * 64 * 32, 512)
+        self.fc1 = nn.Linear(32 * 64 * 32, 512)
         # self.dropout1 = nn.Dropout(p=0.5)  # Dropout layer after fc1
         self.fc2 = nn.Linear(512, 512)
         # self.dropout2 = nn.Dropout(p=0.5)  # Dropout layer after fc2

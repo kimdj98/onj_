@@ -10,6 +10,8 @@ from tqdm import tqdm
 import cv2
 import numpy as np
 from enum import Enum
+from pathlib import Path
+import json
 
 from monai.data import Dataset, DataLoader
 from monai.transforms import (
@@ -142,7 +144,10 @@ def create_yolo_dataset(cfg: DictConfig):
 
     elif modal == Modal.PA:
         BASE_PATH = cfg.data.data_dir
-        DATA_PATH = f"YOLO_panorama"
+        DATA_PATH = f"YOLO_PA"
+        if os.path.exists(f"{BASE_PATH}/{DATA_PATH}"):
+            print("YOLO_PA already exists")
+
         if not os.path.exists(f"{BASE_PATH}/{DATA_PATH}"):
             os.makedirs(f"{BASE_PATH}/{DATA_PATH}/images/train")
             os.makedirs(f"{BASE_PATH}/{DATA_PATH}/images/val")
@@ -151,10 +156,58 @@ def create_yolo_dataset(cfg: DictConfig):
             os.makedirs(f"{BASE_PATH}/{DATA_PATH}/labels/val")
             os.makedirs(f"{BASE_PATH}/{DATA_PATH}/labels/test")
 
-        dim_x = cfg.data.PA_dim[0]
-        dim_y = cfg.data.PA_dim[1]
+        # dim_x = cfg.data.PA_dim[0]
+        # dim_y = cfg.data.PA_dim[1]
 
-        
+        def inner(split: str = "train"):
+            base_dir = Path(cfg.data.data_dir)
+            # read train.txt
+            with open(f"{base_dir}/{split}.txt", "r") as f:
+                patients = f.readlines()
+                patients = [line.split(" ")[0].split("/")[1] for line in patients]
+
+            for patient in tqdm(patients):
+                patient_dir = base_dir / "ONJ_labeling" / patient
+                # if patient_dir has no panorama folder, skip
+                if not (patient_dir / "panorama").exists():
+                    continue
+
+                # if patient_dir has no label.json, skip
+                if not (patient_dir / "panorama" / "label.json").exists():
+                    continue
+
+                # if patient_dir has no images, skip
+                if len(os.listdir(patient_dir / "panorama")) == 0:
+                    continue
+
+                # move image to YOLO_PA_train/images
+                os.system(f"cp {patient_dir}/panorama/*.jpg {base_dir}/YOLO_PA/images/{split}/{patient_dir.name}.jpg")
+
+                # move label.json to YOLO_PA_train/labels
+                # os.system(
+                #     f"cp {patient_dir}/panorama/label.json {base_dir}/YOLO_PA/labels/{split}/{patient_dir.name}.json"
+                # )
+
+                # write label.txt in YOLO format
+                with open(f"{base_dir}/YOLO_PA/labels/{split}/{patient_dir.name}.txt", "w") as f:
+                    with open(patient_dir / "panorama" / "label.json", "r") as file:
+                        labels = json.load(file)
+                        for box in labels["bbox"]:
+                            x = box["coordinates"][0]
+                            y = box["coordinates"][1]
+                            w = box["coordinates"][2]
+                            h = box["coordinates"][3]
+
+                            f.write(f"{0} {x} {y} {w} {h}\n")
+
+        inner("train")
+        print("Create YOLO_PA_train done")
+
+        inner("val")
+        print("Create YOLO_PA_val done")
+
+        inner("test")
+        print("Create YOLO_PA_test done")
 
 
 if __name__ == "__main__":

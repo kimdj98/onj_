@@ -134,6 +134,19 @@ def distribute(cfg: DictConfig):
                     print(f"Patient {patient_name} does not have panorama data")
                     continue
 
+                # Step4: convert the bounding box coordinates to the normalized coordinates
+                panorama_metadata = patient["panorama"]
+                width = panorama_metadata["width"]
+                height = panorama_metadata["height"]
+
+                for idx in range(len(panorama_metadata["bbox"])):
+                    x, y, w, h = panorama_metadata["bbox"][idx]["coordinates"]
+
+                    panorama_metadata["bbox"][idx]["coordinates"][0] = (x + w / 2) / width
+                    panorama_metadata["bbox"][idx]["coordinates"][1] = (y + h / 2) / height
+                    panorama_metadata["bbox"][idx]["coordinates"][2] = w / width
+                    panorama_metadata["bbox"][idx]["coordinates"][3] = h / height
+
                 # write label.json to each patient panorama data
                 with open(patient_dir / "panorama" / "label.json", "w") as patient_json_file:
                     json.dump(patient["panorama"], patient_json_file)

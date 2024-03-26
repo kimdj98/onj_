@@ -1,5 +1,5 @@
 path: /mnt/4TB1/onj/dataset/v0
-train: /mnt/4TB1/onj/dataset/v0/YOLO_with_labels/images/train
-val: /mnt/4TB1/onj/dataset/v0/YOLO_with_labels/images/val
+train: /mnt/4TB1/onj/dataset/v0/YOLO_PA/images/train
+val: /mnt/4TB1/onj/dataset/v0/YOLO_PA/images/val
 nc: 1
 names: ['ONJ']
