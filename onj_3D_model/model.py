@@ -215,3 +215,64 @@ if __name__ == '__main__':
     # summary(model=model, input_size=(3, 16, 128, 128), batch_size=-1, device="cpu")
     summary(model=model, input_size=(1, 1, 64, 512, 512), batch_size=-1, device="cpu")
     print("--- %s seconds ---" % (time.time() - start_time))
+
+def get_bounding_boxes(binary_mask):
+    """
+    Expects binary_mask to be of shape (batch_size, depth, height, width).
+    Returns bounding boxes as a tensor of shape (batch_size, depth, 4).
+    Each bounding box is represented by (x_min, y_min, x_max, y_max).
+    """
+    batch_size, _, depth, height, width = binary_mask.shape
+    bounding_boxes = []
+
+    for b in range(batch_size):
+        boxes_per_batch = []
+        for d in range(depth):
+            slice_mask = binary_mask[b, 0, d]
+            pos = torch.where(slice_mask)
+            
+            if len(pos[0]) == 0:  # If no foreground pixel is found
+                boxes_per_batch.append(torch.tensor([0, 0, width, height], dtype=torch.float32))
+            else:
+                x_min, y_min = torch.min(pos[1]), torch.min(pos[0])
+                x_max, y_max = torch.max(pos[1]), torch.max(pos[0])
+                boxes_per_batch.append(torch.tensor([x_min, y_min, x_max-x_min, y_max-y_min], dtype=torch.float32))
+        
+        bounding_boxes.append(torch.stack(boxes_per_batch))
+    
+    return torch.stack(bounding_boxes)  # Shape: (batch_size, depth, 4)
+
+
+class CustomLoss(nn.Module):
+    def __init__(self, bbox_lambda=1.0):
+        super(CustomLoss, self).__init__()
+        self.bbox_lambda = bbox_lambda
+        self.bce_loss = nn.BCEWithLogitsLoss()  # Assuming model outputs are logits
+        self.smooth_l1_loss = nn.SmoothL1Loss()
+
+    def forward(self, model_output, target_masks, target_bboxes, device):
+        """
+        model_output: Raw model outputs (logits) of shape (batch_size, depth, height, width).
+        target_masks: Ground truth binary masks of shape (batch_size, depth, height, width).
+        target_bboxes: Ground truth bounding boxes of shape (batch_size, depth, 4).
+        """
+        # Convert model output to binary masks
+        pred_masks = torch.sigmoid(model_output)  # Convert logits to probabilities
+        pred_masks_bin = (pred_masks > 0.5).float()
+        
+        # Calculate segmentation loss
+        seg_loss = self.bce_loss(model_output, target_masks)
+        
+        # Extract predicted bounding boxes from binary masks
+        pred_bboxes = get_bounding_boxes(pred_masks_bin)
+        
+        
+        # Calculate bounding box regression loss
+        # print(pred_bboxes.shape, target_bboxes.shape)
+        pred_bboxes = pred_bboxes.to(device)
+        bbox_loss = self.smooth_l1_loss(pred_bboxes, target_bboxes)
+        
+        # Combine losses
+        total_loss = seg_loss + self.bbox_lambda * bbox_loss
+        # return total_loss
+        return seg_loss, bbox_loss

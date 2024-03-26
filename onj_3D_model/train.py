@@ -15,7 +15,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
 
-from model import UNet3D
+from model import UNet3D, CustomLoss
 import argparse
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -34,33 +34,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--m', '-m', default=0, type=int, help= \
     '1: train, 2: test')
 parser.add_argument('--gpu', '-g', default=0, type=int)
-parser.add_argument('--exp', '-exp', type=str, help='exp name')
+parser.add_argument('--exp', '-exp', type=str, help='experiment name')
 args = parser.parse_args()
 
-# os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
 data_dir = 'dataset_processed_512' ## this data is unnormalized data
 save_dir = f'results/{args.exp}'
 BATCH_SIZE = 1
-ACCUMULATION_STEPS=4
-IN_CHANNELS = 1 # channel 
+ACCUMULATION_STEPS=4 ## Instead of using batch_size>1, we accumulate loss over ACCUMULATION_STEPs and use loss.backward for updating
+IN_CHANNELS = 1 # SHOULD BE FIXED AS 1 (IMAGE CHANNEL)
 BCE_WEIGHTS = [0.004, 0.996]
-size = 512
+size = 512 # IMAGE SIZE TO BE RESHAPED
 
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
 
-# x_train = np.load(data_dir+'/'+'train_total_mini.npy') # memory
-# y_train = np.load(data_dir+'/'+'train_label_mini.npy')
-
-
-
-x_val = np.load(data_dir+'/'+'val_total.npy')
-# y_val = np.load(data_dir+'/'+'val_label.npy')
-
-# x_test = np.load(data_dir+'/'+'test_total.npy')
-# y_test = np.load(data_dir+'/'+'test_label.npy')
 def adjust_intensity_numpy(image_array, factor=1.5):
     """Adjust the intensity of the 3D numpy array directly."""
     # Assuming image_array is a numpy array and already normalized (e.g., 0 to 1 range)
@@ -114,57 +103,35 @@ class CustomDataset(Dataset):
     def __init__(self, split):
         if split == 'train':
 
-            # self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
-            # self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            # self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
-
             ### original slices
             self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
             self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            self.seg = np.load(data_dir+f'/{split}_total_seg_org.npz', mmap_mode='r')
-            # print(len(self.img))
-            # print(len(self.seg))
-            # print(len(self.Y))
-            # quit()
+            self.seg_npy = np.load(data_dir+f'/{split}_total_seg_npy.npz', mmap_mode='r')
 
         elif split in ['test', 'val']:
-            
-            # self.img = np.load(data_dir+f'/{split}_total.npy', mmap_mode='r')
-            # self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            # self.seg = np.load(data_dir+f'/{split}_seg.npy', mmap_mode='r')
 
             self.img = np.load(data_dir+f'/{split}_total_org.npz', mmap_mode='r')
             self.Y = np.load(data_dir+f'/{split}_label.npy', mmap_mode='r')
-            self.seg = np.load(data_dir+f'/{split}_total_seg_org.npz', mmap_mode='r')
+            self.seg_npy = np.load(data_dir+f'/{split}_total_seg_npy.npz', mmap_mode='r') 
 
-            if split == 'val':
+
+            if split == 'val': ## FOR GPU MEMORY EFFICIENCY, LOAD ONLY 10 DATA FROM VAL
                 tmp = {}
                 tmp_seg = {}
+                tmp_seg_npy = {}
                 for i, key in enumerate(self.img):
                     if i < 10:
                         img_component = self.img[key]
-                        seg_component = self.seg[key]
+                        seg_npy_component = self.seg_npy[key]
                         tmp[f'{i+1}'] = img_component
-                        tmp_seg[f'{i+1}'] = seg_component
+                        tmp_seg_npy[f'{i+1}'] = seg_npy_component
 
                 self.img = tmp
                 self.Y = self.Y[:10]
-                self.seg = tmp_seg
-
-
-
-        # lb = np.percentile(self.img, 1)
-        # ub = np.percentile(self.img, 99)
-        # self.img = np.clip(self.img, lb, ub)
-
-        ## standardization (z-score normalization)
-
-        ### FOR NON ORG FILE
-        # self.mean = np.mean(self.img)
-        # self.std = np.std(self.img)
-        # self.img = (self.img - self.mean) / self.std
+                self.seg_npy = tmp_seg_npy
 
         ### FOR ORG FILE (NPZ)
+        ### NORMALIZATION
         mean_values={}
         std_values={}
         for key in self.img:
@@ -175,8 +142,6 @@ class CustomDataset(Dataset):
 
         self.mean = np.mean(list(mean_values.values()))
         self.std = np.std(list(std_values.values()))
-
-
 
 
         ## robust scaling
@@ -226,46 +191,47 @@ class CustomDataset(Dataset):
     
     def __getitem__(self, idx):
         img_idx = self.load_data_org(self.img, idx)
-
         img_idx = np.asarray(img_idx).astype(np.float32)
+
         Y_idx = self.load_data(self.Y, idx)
         Y_idx = np.asarray(Y_idx).astype(np.float32)
 
-        seg_idx = self.load_data_org(self.seg, idx)
-        seg_idx = np.asarray(seg_idx).astype(np.float32)
-
+        seg_npy_idx = self.load_data_org(self.seg_npy, idx)
+        seg_npy_idx = np.asarray(seg_npy_idx).astype(np.float32) #(depth, 4)
 
         current_depth = img_idx.shape[0]
+
+
+        ##! For reshaping and reslicing, we use zero padding
+        ##! This is for preventing image destruction
         if current_depth < 64:
             # Padding
             pad_size = 64 - current_depth
             pad_before = pad_size // 2
             pad_after = pad_size - pad_before
             img_idx_padded = np.pad(img_idx, ((pad_before, pad_after), (0, 0), (0, 0)), mode='constant', constant_values=0)
-            seg_idx_padded = np.pad(seg_idx, ((pad_before, pad_after), (0, 0), (0, 0)), mode='constant', constant_values=0)
 
+            seg_npy_idx_padded = np.pad(seg_npy_idx, ((pad_before, pad_after), (0,0)), mode='constant', constant_values=9999)
 
         elif current_depth > 64:
             # Cropping or Resampling (Here we'll just crop for simplicity)
             start_slice = (current_depth - 64) // 2
             img_idx_padded = img_idx[start_slice:start_slice + 64, :, :]
-            seg_idx_padded = seg_idx[start_slice:start_slice+64, :, :]
+
+            seg_npy_idx_padded = seg_npy_idx[start_slice:start_slice+64, :]
         else:
             img_idx_padded = img_idx
-            seg_idx_padded = seg_idx
+            seg_npy_idx_padded = seg_npy_idx
 
 
-        depth_ratio = 64 / img_idx_padded.shape[0] #desired depth = 70 (empirically chosen)
+        depth_ratio = 64 / img_idx_padded.shape[0] #desired depth = 64 (empirically chosen)
         wh_ratio1 = size / img_idx_padded.shape[1] #desired depth = size (empirically chosen)
         wh_ratio2 = size / img_idx_padded.shape[2]
 
         img_idx_padded = zoom(img_idx_padded, (1, wh_ratio1, wh_ratio2))
-        seg_idx_padded = zoom(seg_idx_padded, (1, wh_ratio1, wh_ratio2))
 
-        return img_idx_padded, Y_idx, seg_idx_padded, self.mean, self.std
-        # print(img_idx.shape)
-        # quit()
-        # return img_idx, Y_idx
+        return img_idx_padded, Y_idx, seg_npy_idx_padded, self.mean, self.std
+
 
     def load_data(self, mmap_array, idx):
         return mmap_array[idx]
@@ -273,7 +239,58 @@ class CustomDataset(Dataset):
         return mmap_array[f'{idx+1}']
 
 
+# def binary_thresholding(output, threshold=0.5):
+#     return (output > threshold).float()  # Convert to 0s and 1s
 
+def get_bounding_boxes(binary_mask):
+    """
+    Expects binary_mask to be of shape (batch_size, depth, height, width).
+    Returns bounding boxes as a tensor of shape (batch_size, depth, 4).
+    Each bounding box is represented by (x_min, y_min, x_max, y_max).
+    """
+    batch_size, depth, height, width = binary_mask.shape
+    bounding_boxes = []
+
+    for b in range(batch_size):
+        boxes_per_batch = []
+        for d in range(depth):
+            slice_mask = binary_mask[b, d]
+            pos = torch.where(slice_mask)
+            
+            if len(pos[0]) == 0:  # If no foreground pixel is found
+                boxes_per_batch.append(torch.tensor([0, 0, width, height], dtype=torch.float32))
+            else:
+                x_min, y_min = torch.min(pos[1]), torch.min(pos[0])
+                x_max, y_max = torch.max(pos[1]), torch.max(pos[0])
+                boxes_per_batch.append(torch.tensor([x_min, y_min, x_max-x_min, y_max-y_min], dtype=torch.float32))
+        
+        bounding_boxes.append(torch.stack(boxes_per_batch))
+    
+    return torch.stack(bounding_boxes)  # Shape: (batch_size, depth, 4)
+
+def create_masks_from_bboxes(bounding_boxes, volume_shape):
+    """
+    Create binary masks from bounding boxes.
+
+    Parameters:
+    - bounding_boxes: Tensor of shape (batch_size, num_boxes, 5) where each box is defined as (depth, x_min, y_min, x_max, y_max).
+    - volume_shape: The shape of the volume for which masks are to be created, typically (batch_size, depth, height, width).
+
+    Returns:
+    - A tensor of binary masks with the same spatial dimensions as the input volume, shape (batch_size, depth, height, width).
+    """
+    batch_size, _, height, width = volume_shape
+    masks = torch.zeros(volume_shape, dtype=torch.float32)
+
+    ##bounding_boxes = (batch_size, depth, 4)
+    for b in range(batch_size):
+        for depth in range(volume_shape[1]):
+            x_min, y_min, w, h = bounding_boxes[b,depth].int()
+            masks[b, depth, y_min:y_min+h+1, x_min:x_min+w+1] = 1.0
+
+    return masks
+
+## Multi-GPU
 ### distributed data parallel
 # dist.init_process_group("nccl")
 # local_rank = torch.distributed.get_rank()
@@ -301,10 +318,9 @@ elif args.m == 2:
     test_dataset = CustomDataset('test')
     test_dataloader = DataLoader(test_dataset, batch_size = 1, shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE
 
-    ## FOR CHECKING TRAIN SET
+    ## FOR CHECKING with Train test in testing progress, uncommnet below two lines
     # test_dataset = CustomDataset('train')
     # test_dataloader = DataLoader(test_dataset, batch_size = 1, shuffle=True)
-
 
     dataloader = test_dataloader
     model = torch.load(save_dir+'/model.pth', map_location=device)
@@ -320,12 +336,11 @@ elif args.m == 2:
     model.eval()
     EPOCH = 1
 
-# criterion = CrossEntropyLoss(weight=torch.Tensor(BCE_WEIGHTS))
 criterion = torch.nn.BCELoss()
 criterion_seg = torch.nn.BCEWithLogitsLoss(weight=torch.Tensor([0.2]).to(device))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch: 0.95**epoch, last_epoch=-1, verbose=False)
-
+criterion_seg_npy = CustomLoss()
 
 total_loss = []
 total_val_loss = []
@@ -340,29 +355,35 @@ for epoch in range(EPOCH):
     
     with tqdm(dataloader, unit='batch') as tepoch:
         batch_loss = 0
-        for idx, (img, y, seg, mean, std) in enumerate(tepoch):
+        for idx, (img, y, seg_npy, mean, std) in enumerate(tepoch):
             optimizer.zero_grad()
 
 
             img = img.to(device)
             y = y.to(device)
-            seg = seg.to(device)
+            seg_npy = seg_npy.to(device) * size ##(from ratio to real value) #(bs, depth, 4)
 
-
+            seg_mask = create_masks_from_bboxes(seg_npy, img.shape) #(batchsize, 64, 512, 512)
+            seg_mask = seg_mask.unsqueeze(1).to(device) # increase channel dimension (batchsize, 1, 64, 512, 512)
 
             
             # img = (BS, 64, 256, 256)
             batch_size = img.shape[0]
             img = img.unsqueeze(1)
             y = y.unsqueeze(1)
-            seg = seg.unsqueeze(1)
-
+            # seg = seg.unsqueeze(1)
 
             pred, pred_seg = model(img)
 
+
             loss_cls = criterion(pred, y) / ACCUMULATION_STEPS
             # print(pred_seg.shape, seg.shape)
-            loss_seg = criterion_seg(pred_seg, seg.float())
+            # loss_seg = criterion_seg(pred_seg, seg.float())
+            
+            
+            
+            loss_seg, loss_bbox = criterion_seg_npy(pred_seg, seg_mask, seg_npy, device)
+
 
             
             loss = loss_cls + loss_seg
@@ -382,7 +403,7 @@ for epoch in range(EPOCH):
                 ## BATCHSIZE 1
                 slices_GT = img.squeeze(1).cpu().detach().numpy() #(bs, 64, 256, 256)
                 seg_pred = pred_seg.squeeze(1).cpu().detach().numpy()
-                seg_GT = seg.squeeze(1).cpu().detach().numpy()
+                seg_GT = seg_mask.squeeze(1).cpu().detach().numpy()
 
                 mean = mean.cpu().detach().numpy()
                 std = std.cpu().detach().numpy()
@@ -413,8 +434,8 @@ for epoch in range(EPOCH):
                             # axes[0].title('Original')
                             axes[0].axis('off')
 
-                            axes[1].imshow(img_GT, cmap='gray', alpha=0.5)
-                            axes[1].imshow(seg_pred_plot, alpha=0.2)
+                            # axes[1].imshow(img_GT, cmap='gray', alpha=0.5)
+                            axes[1].imshow(seg_pred_plot, alpha=0.9)
                             # axes[1].title('Prediction')
                             axes[1].axis('off')
                             plt.savefig(save_dir+f'/seg_{idx}_{slice_idx}.jpg')
@@ -436,19 +457,28 @@ for epoch in range(EPOCH):
         with torch.no_grad():
 
             val_batch_loss = 0
-            for val_idx, (val_img, val_y, val_seg, mean, std) in enumerate(val_dataloader):
+            for val_idx, (val_img, val_y, val_seg_npy, mean, std) in enumerate(val_dataloader):
                 val_img = val_img.to(device)
                 val_y = val_y.to(device)
-                val_seg = val_seg.to(device)
+
+                val_seg_npy = val_seg_npy.to(device) * size
+                val_seg_mask = create_masks_from_bboxes(val_seg_npy, val_img.shape)
+                val_seg_mask = val_seg_mask.unsqueeze(1).to(device)
             
                 
                 val_batch_size = val_img.shape[0]
                 val_img = val_img.unsqueeze(1)
                 val_y = val_y.unsqueeze(1)
-                val_seg = val_seg.unsqueeze(1)
+
                 val_pred, val_pred_seg = model(val_img)
+
                 val_loss_cls = criterion(val_pred, val_y)
-                val_loss_seg = criterion_seg(val_pred_seg, val_seg)
+                # val_loss_seg = criterion_seg(val_pred_seg, val_seg)
+
+                val_loss_seg, val_loss_bbox = criterion_seg_npy(val_pred_seg, val_seg_mask, val_seg_npy, device)
+                val_loss = val_loss_cls + val_loss_seg
+            
+
                 val_loss = val_loss_cls + val_loss_seg
                 val_batch_loss += val_loss.item() / val_batch_size
 
