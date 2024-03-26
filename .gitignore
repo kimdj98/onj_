@@ -1,10 +1,16 @@
 *.zip
 dataset/
 
+dataset_processed
+
 outputs/
 *.pt
 sa.png
 *.png
+*.npy
+*.pth
+*.jpg
+*.npz
 
 deleted/
 .vscode/
