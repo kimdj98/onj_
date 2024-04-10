@@ -156,6 +156,6 @@ def distribute(cfg: DictConfig):
 if __name__ == "__main__":
     distribute()
 
-# NOTE: EW-0070 does not CT data.
-# NOTE: EW-0141 does not CT data.
+# NOTE: EW-0070 does not have CT data.
+# NOTE: EW-0141 does not have CT data.
 # NOTE: EW-0424 does not have CBCT data but has CT label
