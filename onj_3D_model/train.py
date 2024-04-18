@@ -176,9 +176,6 @@ class CustomDataset(Dataset):
         self.mean = np.mean(list(mean_values.values()))
         self.std = np.std(list(std_values.values()))
 
-
-
-
         ## robust scaling
         # median = np.median(self.img)
         # q1 = np.percentile(self.img, 25)
@@ -297,6 +294,7 @@ if args.m == 1:
     dataloader = train_dataloader 
     model.train()
     EPOCH = 100
+    
 elif args.m == 2:
     test_dataset = CustomDataset('test')
     test_dataloader = DataLoader(test_dataset, batch_size = 1, shuffle=True) #For using FindBoundary, we have to set BATCH_SIZE as BATCH_SIZE

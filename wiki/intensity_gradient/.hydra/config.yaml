@@ -1,0 +1,25 @@
+train:
+  gpu: 1
+  batch_size: 2
+  epoch: 50
+  lr: 3.0e-05
+  weight_decay: 0.0001
+data:
+  data_version: v0
+  CT_dim:
+  - 512
+  - 512
+  PA_dim:
+  - 2048
+  - 1024
+  data_generation: true
+  modal: panorama
+  dir: axial
+  split_modal: panorama
+  data_dir: /home/user/onj/dataset/${data.data_version}
+  ONJ_dir: ${data.data_dir}/ONJ_labeling
+  Non_ONJ_dir: ${data.data_dir}/Non_ONJ
+  label_dir: /mnt/4TB1/onj/dataset/${data.data_version}/label_v231122/label.json
+  split_ratio: 0.8
+  test_split: true
+model: null

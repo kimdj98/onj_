@@ -1,36 +1,221 @@
 import sys
-import pathlib
 
-sys.path.append(".")
+sys.path.append("/mnt/4TB1/onj/onj_project")
 
+import time
+from pathlib import Path
+
+import torch
 import hydra
-from data.onj_dataset import get_data_loader
-from model.model import TempModel
+
+from data.data_dicts import LoadJsonLabeld, SelectSliced, get_data_dicts
+from data.utils import Modal, Direction
+from monai.data import Dataset, DataLoader
+from monai.transforms import (
+    Compose,
+    MapTransform,
+    Transform,
+    LoadImaged,
+    ScaleIntensityRanged,
+    ScaleIntensityRangePercentilesd,
+    ToTensord,
+    EnsureChannelFirstd,
+    Rotate90d,
+    Flipd,
+    Resized,
+)
+from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet50_3d, resnet101_3d
+
+# from losses.losses import CrossEntropyLoss # custom loss
+from torch.nn import CrossEntropyLoss  # standard loss
+from torch.nn import functional as F
+from torch.optim.lr_scheduler import StepLR
+from torcheval.metrics import BinaryAUROC
+from torcheval.metrics import BinaryAccuracy
+
 from tqdm import tqdm
 
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
 
-@hydra.main(version_base="1.3", config_path="../config", config_name="config")
-def main(conf):
-    data_dir = pathlib.Path(conf.data_dir) / conf.data_version  # path to /dataset
 
-    train_loader = get_data_loader(conf, "train")
+def plot_auroc(y_true, y_scores, epoch):
+    fpr, tpr, _ = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+    plt.figure()
+    lw = 2
+    plt.plot(fpr, tpr, color="darkorange", lw=lw, label=f"ROC curve (area = {roc_auc:.2f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"Receiver Operating Characteristic - Epoch {epoch}")
+    plt.legend(loc="lower right")
+    plt.savefig("roc.png")
+    plt.close()
 
-    model = TempModel(conf)
 
-    for p_folder, _, label in train_loader:
-        dir = data_dir / p_folder[0]
+@hydra.main(version_base="1.1", config_path="../config", config_name="config")
+def train(cfg):
+    # step1: load data
+    CT_dim_x = cfg.data.CT_dim[0]
+    CT_dim_y = cfg.data.CT_dim[1]
 
-        if p_folder[0].startswith("ONJ"):
-            # print(p_folder, label)
-            pass
+    transforms = Compose(
+        [
+            LoadImaged(keys=["CT_image"]),
+            EnsureChannelFirstd(keys=["CT_image"]),
+            LoadJsonLabeld(keys=["CT_annotation"]),  # Use the custom transform for labels
+            ScaleIntensityRanged(keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
+            # ScaleIntensityRangePercentilesd(
+            #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
+            # ),
+            Rotate90d(keys=["CT_image"], spatial_axes=(0, 1)),
+            Flipd(keys=["CT_image"], spatial_axis=2),
+            SelectSliced(keys=["CT_image", "CT_SOI"]),
+            Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
+            ToTensord(keys=["CT_image"]),
+        ]
+    )
 
-        elif p_folder[0].startswith("Non_ONJ"):
-            # print(p_folder, label)
-            pass
+    # Create data_dicts -> dataset -> dataloader
+    BASE_PATH = Path(cfg.data.data_dir)
+    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT])
 
-        else:
-            raise ValueError(f"Invalid patient folder name: {p_folder[0]}")
+    train_dataset = Dataset(data=train_data_dicts, transform=transforms)
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+
+    val_dataset = Dataset(data=val_data_dicts, transform=transforms)
+    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
+
+    test_dataset = Dataset(data=test_data_dicts, transform=transforms)
+    test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
+
+    # Initialize model, loss function, optimizer, metrics
+    if cfg.model.name == "resnet18":
+        model = resnet18_3d()
+
+    elif cfg.model.name == "resnet50":
+        model = resnet50_3d()
+
+    if cfg.train.pretrained:
+        model.load_state_dict(torch.load(cfg.train.pretrained))
+        print("Pretrained model loaded")
+
+    loss = CrossEntropyLoss()
+    auroc = BinaryAUROC()
+    acc = BinaryAccuracy()
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
+    # scheduler = StepLR(optimizer, step_size=cfg.train.scheduler_step_size)  # , gamma=cfg.train.scheduler_gamma)
+
+    # switch model and dataset device to cuda
+    device = torch.device(f"cuda:{cfg.train.gpu}" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    model = model.to(device)
+
+    # Create results.txt
+    with open("results.txt", "w") as f:
+        f.write("Results\n")
+
+    # training loop
+    for epoch in range(cfg.train.epoch):
+        best_AUROC = 0.0
+        model.train()
+        running_loss = 0.0
+
+        train_iterator = tqdm(train_dataloader, desc=f"Epoch {epoch}")
+        for i, batch in enumerate(train_iterator):
+            # switch device
+            batch["CT_image"] = batch["CT_image"].to(device)
+            batch["CT_label"] = batch["CT_label"].to(device)
+
+            optimizer.zero_grad()
+            output = model(batch["CT_image"])
+            loss_value = loss(output, batch["CT_label"])
+            loss_value.backward()
+
+            p = output.detach()
+            p = F.softmax(p, dim=1)
+            p = p[0]
+
+            auroc.update(p[1].unsqueeze(0), batch["CT_label"])
+            acc.update(p[1].unsqueeze(0), batch["CT_label"])
+
+            optimizer.step()
+
+            running_loss += loss_value.item()
+
+            if ((i + 1) % 50) == 0:
+                train_iterator.set_postfix(
+                    loss=f"{running_loss / 10:.4f}", auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}"
+                )
+                running_loss = 0.0
+
+        # scheduler.step()
+
+        auroc_val = auroc.compute()
+        acc_val = acc.compute()
+
+        print(f"\nEpoch {epoch} - Training AUROC: {auroc_val:.4f}, Training ACC: {acc_val:.4f}")
+
+        # reset metrics
+        auroc.reset()
+        acc.reset()
+
+        # validation loop
+        with torch.no_grad():
+            true_labels = []
+            predictions = []
+
+            model.eval()
+            val_iterator = tqdm(val_dataloader, desc=f"Validating")
+            for i, batch in enumerate(val_iterator):
+
+                batch["CT_image"] = batch["CT_image"].to(device)
+                batch["CT_label"] = batch["CT_label"].to(device)
+
+                output = model(batch["CT_image"])
+                loss_value = loss(output, batch["CT_label"])
+
+                p = output.detach()
+                p = F.softmax(p, dim=1)
+                p = p[0]
+
+                auroc.update(p[1].unsqueeze(0), batch["CT_label"])
+                acc.update(p[1].unsqueeze(0), batch["CT_label"])
+
+                true_labels.extend(batch["CT_label"].cpu().numpy())
+                predictions.extend(p[1].unsqueeze(0).cpu().numpy())
+
+                if i == len(val_iterator) - 1:
+                    val_iterator.set_postfix(auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}")
+
+            auroc_val = auroc.compute()
+            acc_val = acc.compute()
+
+            print(f"\nEpoch {epoch} - Validation AUROC: {auroc_val:.4f}, Validation ACC: {acc_val:.4f}")
+
+            if auroc_val > best_AUROC:  # when AUROC is improved
+                # plot auroc curve
+                plot_auroc(true_labels, predictions, epoch)
+
+                # save model
+                best_AUROC = auroc_val
+                strtime = time.strftime("%y%m%d_%H%M")
+                torch.save(model.state_dict(), f"{cfg.model.name}_best.pth")
+                print(f"Best model saved {cfg.model.name}_best.pth")
+
+            # save results
+            with open("results.txt", "a") as f:
+                f.write(f"Epoch {epoch} auroc: {auroc_val:.4f}, acc: {acc_val:.4f}\n")
+
+            auroc.reset()
+            acc.reset()
+
+            # TODO: testing loop
 
 
 if __name__ == "__main__":
-    main()
+    train()

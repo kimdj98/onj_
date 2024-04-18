@@ -24,22 +24,11 @@ from monai.transforms import (
 )
 from monai.config.type_definitions import NdarrayTensor
 from monai.visualize.utils import blend_images, matshow3d  ## label과 Image를 합친 영상  ## 3d image의 visulization
-
+from mamba_ssm import Mamba
 import torch
+from utils import Modal, Direction
 
 # from torch.utils.data import Dataset, DataLoader
-
-
-class Modal(Enum):
-    MDCT = "MDCT"
-    CBCT = "CBCT"
-    PA = "panorama"
-
-
-class Direction(Enum):
-    AXIAL = "axial"
-    SAGITTAL = "sagittal"
-    CORONAL = "coronal"
 
 
 def load_data_dict(conf: DictConfig, modal: str, dir: str, type: str) -> dict:
@@ -250,7 +239,8 @@ def main(cfg: DictConfig) -> None:
     slice_num = 67
     sample_image = dataset[0]["image"][..., slice_num]
     sample_label = dataset[0]["label"][slice_num, :]
-    (x, y, w, h) = np.array(sample_label[1:]) * 512
+    (x, _, w, _) = np.array(sample_label[1:]) * dim_x
+    (_, y, _, h) = np.array(sample_label[1:]) * dim_y
 
     # print("Image data:", np.array(sample_image))
 

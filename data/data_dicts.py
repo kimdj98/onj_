@@ -1,3 +1,7 @@
+import sys
+
+sys.path.append("/mnt/4TB1/onj/onj_project")
+
 import torch
 import json
 
@@ -23,42 +27,51 @@ from monai.transforms import (
     Flipd,
     Resized,
 )
-from utils import Modal, Direction
+from data.utils import Modal, Direction
 from monai.config.type_definitions import NdarrayTensor
 
 # from tqdm import tqdm
 
-def add_CT_data_dicts(CT_modal: Modal, data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True, CT_dir = "axial"):
+
+def add_CT_data_dicts(
+    CT_modal: Modal, data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True, CT_dir="axial"
+):
     if exists:
         modal_dir = PATIENT_PATH / CT_modal.value
         modal_dir = list(modal_dir.glob(f"*/{CT_modal.value}_{CT_dir}"))[0]
-        
+
         annotations = json.load(open(modal_dir / "label.json", "r"))
-        
+
         if "SOI" in annotations.keys():
             SOI = annotations["SOI"]
         else:
             SOI = [0, 0]
 
-        data_dicts.append({
-            "CT_image": modal_dir / "nifti" / "output.nii.gz",
-            "CT_annotation": modal_dir / "label.json",
-            "CT_SOI": SOI,
-            "CT_label": ONJ
-        })
+        data_dicts.append(
+            {
+                "CT_image": modal_dir / "nifti" / "output.nii.gz",
+                "CT_annotation": modal_dir / "label.json",
+                "CT_SOI": SOI,
+                "CT_label": ONJ,
+            }
+        )
+
 
 def add_panorama_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     pass
 
+
 def add_BoneSPECT_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     pass
+
 
 def add_ClinicalData_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     pass
 
+
 def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [0.8, 0.1, 0.1]):
     ONJ_PATH = BASE_PATH / "ONJ_labeling"
-    NON_ONJ_PATH = BASE_PATH / "Non_ONJ"
+    NON_ONJ_PATH = BASE_PATH / "Non_ONJ_soi"
 
     data_dicts = []
     patients = list(ONJ_PATH.glob("*")) + list(NON_ONJ_PATH.glob("*"))
@@ -73,7 +86,7 @@ def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [
     patients_train, patients_val, labels_train, labels_val = train_test_split(
         patients_train, labels_train, test_size=split_ratio[1], random_state=42
     )
-    
+
     def helper(data_dicts: list, patients: list, labels: list, includes: list):
         for patient, label in zip(patients, labels):
             mdct_exists = (patient / "MDCT").is_dir()
@@ -135,7 +148,7 @@ class LoadJsonLabeld(MapTransform):
             label_end = annotations["slices"][-1]["slice_number"]
 
             t = torch.zeros((total_slices, 5), dtype=torch.float32)
-        
+
             for i in range(num_labels):
                 slice = annotations["slices"][i]
                 slice_number = slice["slice_number"]
@@ -149,26 +162,28 @@ class LoadJsonLabeld(MapTransform):
 
         if data["CT_SOI"] != [0, 0]:
             SOI = data["CT_SOI"]
-            t = t[SOI[0]:SOI[1]]
+            t = t[SOI[0] : SOI[1]]
 
         data["CT_annotation"] = t
 
         return data
-    
+
+
 class SelectSliced(MapTransform):
     """
     Custom transform to select slices we are interested from a 3D image
     """
+
     def __init__(self, keys: str, allow_missing_keys: bool = False):
         MapTransform.__init__(self, keys, allow_missing_keys)
 
     def __call__(self, data: dict) -> dict:
-        if data["CT_SOI"] == [0, 0]: # SOI not found
+        if data["CT_SOI"] == [0, 0]:  # SOI not found
             return data
-        
+
         else:
             SOI = data["CT_SOI"]
-            data["CT_image"] = data["CT_image"][..., SOI[0]:SOI[1]]
+            data["CT_image"] = data["CT_image"][..., SOI[0] : SOI[1]]
             return data
 
 
@@ -198,12 +213,29 @@ def main(cfg: DictConfig):
     BASE_PATH = Path(cfg.data.data_dir)
     train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT])
 
+    # train:val:test = 299:38:41 (example)
+
     # Create a MONAI dataset
     dataset = Dataset(data=train_data_dicts, transform=transforms)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
     print(f"Total patients: {dataset.__len__()}")
 
-    for (i, data) in enumerate(dataloader):
+    # import 3d model
+    # 1. load model 3d resnet
+    # model = torch.hub.load('facebookresearch/pytorchvideo', 'slow_r50', pretrained=False)
+    from model.backbone.classifier.ResNet3D import resnet18_3d
+
+    model = resnet18_3d()
+    # convert model weights from cpu to gpu
+    model = model.to(device=torch.device("cuda:0"))
+    # model = model.cuda()
+    from torchsummary import summary
+
+    summary(model, input_size=(1, 64, 512, 512))
+
+    pass
+
+    for i, data in enumerate(dataloader):
         print(data["CT_image"].shape)
         print(data["CT_annotation"].shape)
         print(data["CT_SOI"])

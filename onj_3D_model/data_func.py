@@ -235,7 +235,21 @@ def patient_dicts(cfg: DictConfig) -> Dataset:
     return data_dicts
 
 
-# class PA_dataset(torch.utils.data.Dataset):
+class SelectSliced(MapTransform):
+    """
+    Custom transform to select slices we are interested from a 3D image
+    """
+    def __init__(self, keys: str, allow_missing_keys: bool = False):
+        MapTransform.__init__(self, keys, allow_missing_keys)
+
+    def __call__(self, data: dict) -> dict:
+        if data["SOI"] == [0, 0]:
+            return data
+        
+        else:
+            SOI = data["SOI"]
+            data["image"] = data["image"][..., SOI[0]:SOI[1]]
+            return data
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")

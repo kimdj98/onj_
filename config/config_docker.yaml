@@ -9,20 +9,12 @@
 #       size: [512, 512] # [width, height]
 #     panorama: 
 #       size: [2048, 1024] # [width, height]
-
 train:
-  gpu: 0 # device
-  batch_size: 1
-  epoch: 30
+  gpu: 1
+  batch_size: 2
+  epoch: 50
   lr: 0.00003
   weight_decay: 0.0001
-
-  pretrained: null
-  scheduler_step_size: 1
-
-
-model:
-  name: resnet50 # resnet18, resnet50
 
 
 data:
@@ -36,13 +28,13 @@ data:
   # split_label
   split_modal: panorama # CT, panorama
 
-  # data_dir: /home/user/onj/dataset/${data.data_version}
   data_dir: /mnt/4TB1/onj/dataset/${data.data_version}
   ONJ_dir: ${data.data_dir}/ONJ_labeling
-  NON_ONJ_dir: ${data.data_dir}/Non_ONJ_soi
+  Non_ONJ_dir: ${data.data_dir}/Non_ONJ
   label_dir: /mnt/4TB1/onj/dataset/${data.data_version}/label_v231122/label.json
 
   split_ratio: 0.8
   test_split: true
 
+model:
   

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class BasicBlock3D(nn.Module):
     expansion = 1
 
@@ -16,7 +17,7 @@ class BasicBlock3D(nn.Module):
         if stride != 1 or in_planes != self.expansion * planes:
             self.shortcut = nn.Sequential(
                 nn.Conv3d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm3d(self.expansion * planes)
+                nn.BatchNorm3d(self.expansion * planes),
             )
 
     def forward(self, x):
@@ -25,6 +26,7 @@ class BasicBlock3D(nn.Module):
         out += self.shortcut(x)
         out = F.relu(out)
         return out
+
 
 class ResNet3D(nn.Module):
     def __init__(self, block, num_blocks, num_classes=2):
@@ -41,7 +43,7 @@ class ResNet3D(nn.Module):
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1]*(num_blocks-1)
+        strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
             layers.append(block(self.in_planes, planes, stride))
@@ -59,13 +61,56 @@ class ResNet3D(nn.Module):
         x = self.fc(x)
         return x
 
+
+class Bottleneck3D(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(Bottleneck3D, self).__init__()
+        self.conv1 = nn.Conv3d(in_planes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm3d(planes)
+        self.conv2 = nn.Conv3d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm3d(planes)
+        self.conv3 = nn.Conv3d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm3d(planes * 4)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm3d(self.expansion * planes),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
 def resnet18_3d():
     return ResNet3D(BasicBlock3D, [2, 2, 2, 2])
 
-if __name__=="__main__":
+
+def resnet34_3d():
+    return ResNet3D(BasicBlock3D, [3, 4, 6, 3])
+
+
+def resnet50_3d():
+    return ResNet3D(Bottleneck3D, [2, 2, 2, 2])
+
+
+def resnet101_3d():
+    return ResNet3D(Bottleneck3D, [3, 4, 23, 3])
+
+
+if __name__ == "__main__":
     # Initialize the model
-    model = resnet18_3d().cuda()
+    model = resnet101_3d().cuda()
 
     # Print the model summary (Requires torchsummary)
     from torchsummary import summary
+
     summary(model, (1, 64, 512, 512))
