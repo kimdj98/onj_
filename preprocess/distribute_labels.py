@@ -74,6 +74,7 @@ def distribute(cfg: DictConfig):
                 if folders == []:
                     print(f"Patient {patient_name} does not have {modal} data")
                     continue
+
                 CT_with_date = list((patient_dir / modal).glob("*"))[0]
                 modal_metadata = patient[modal]
 

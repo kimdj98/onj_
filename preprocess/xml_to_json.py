@@ -27,6 +27,7 @@ def initialize(base_dir:Path , label:str="Non_ONJ_soi", modal:str="MDCT" ,direct
             json.dump(label_data, f)
             pass
 
+
 def xml_to_json(base_dir:Path , label:str="Non_ONJ_soi", modal:str="MDCT" ,direction:str="axial"):
     def helper(xml_file: Path):
         return int(re.findall(r'\d+', (xml_file).name.split(".")[0])[0])
@@ -49,7 +50,7 @@ def xml_to_json(base_dir:Path , label:str="Non_ONJ_soi", modal:str="MDCT" ,direc
         if len(xml_files) == 0:
             continue
 
-        assert(len(xml_files) == 2)
+        assert len(xml_files) == 2, f"Patient {patient.name}, Modal {modal}, Direction {direction} has {len(xml_files)} xml files"
         pass
         
         SOI = [helper(xml_file) for xml_file in xml_files]
@@ -81,7 +82,6 @@ def main(cfg: DictConfig):
     xml_to_json(base_dir, label="Non_ONJ_soi", modal="MDCT", direction="axial")
     initialize(base_dir, label="Non_ONJ_soi", modal="MDCT", direction="coronal")
     xml_to_json(base_dir, label="Non_ONJ_soi", modal="MDCT", direction="coronal")
-
 
 
 if __name__ == "__main__":
