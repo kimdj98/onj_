@@ -1,15 +1,3 @@
-# preprocess:
-#   data_dir: ${data_dir}/${data_version}
-#   dest_dir: ${preprocess.data_dir}/preprocessed
-#   label_path: ${preprocess.data_dir}/label_v231122/label.yaml
-#   split_ratio: 0.8
-
-#   img_process:
-#     CT: 
-#       size: [512, 512] # [width, height]
-#     panorama: 
-#       size: [2048, 1024] # [width, height]
-
 train:
   gpu: 0 # device
   batch_size: 1
@@ -37,10 +25,10 @@ data:
   split_modal: panorama # CT, panorama
 
   # data_dir: /home/user/onj/dataset/${data.data_version}
-  data_dir: /mnt/4TB1/onj/dataset/${data.data_version}
+  data_dir: /mnt/aix22301/onj/dataset/${data.data_version}
   ONJ_dir: ${data.data_dir}/ONJ_labeling
   NON_ONJ_dir: ${data.data_dir}/Non_ONJ_soi
-  label_dir: /mnt/4TB1/onj/dataset/${data.data_version}/label_v231122/label.json
+  label_dir: /mnt/aix22301/onj/dataset/${data.data_version}/label_v231122/label.json
 
   split_ratio: 0.8
   test_split: true
