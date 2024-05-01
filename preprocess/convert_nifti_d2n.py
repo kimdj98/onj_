@@ -50,12 +50,17 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    main()
+    # main()
 
-    # dicom2nifti.dicom_series_to_nifti(
-    #     str("/mnt/4TB1/onj/dataset/v0/Non_ONJ_soi/EW-0429/CBCT/20200616/CBCT_axial/dicom"),
-    #     str("/mnt/4TB1/onj/dataset/v0/Non_ONJ/EW-0429/CBCT/20200616/CBCT_axial/nifti/output.nii.gz"),
-    # )
+    dicom2nifti.dicom_series_to_nifti(
+        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/dicom"),
+        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/nifti/output.nii.gz"),
+    )
+
+    dicom2nifti.dicom_series_to_nifti(
+        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/dicom"),
+        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/nifti/output.nii.gz"),
+    )
 
 
 """
