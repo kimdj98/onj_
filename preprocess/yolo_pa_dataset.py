@@ -14,6 +14,15 @@ from omegaconf import DictConfig
 def main(cfg: DictConfig) -> None:
     def inner(split: str = "train"):
         base_dir = Path(cfg.data.data_dir)
+        BASE_PATH = cfg.data.data_dir
+        DATA_PATH = f"YOLO_PA"
+        if not os.path.exists(f"{BASE_PATH}/{DATA_PATH}"):
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/images/train")
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/images/val")
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/images/test")
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/labels/train")
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/labels/val")
+            os.makedirs(f"{BASE_PATH}/{DATA_PATH}/labels/test")
         # read train.txt
         with open(f"{base_dir}/{split}.txt", "r") as f:
             patients = f.readlines()

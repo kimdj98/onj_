@@ -46,7 +46,7 @@ def predict(model: torch.nn.Module, image: str, label: str = None, output_dir: s
 def train(cfg: DictConfig):
     modal = Modal.PA
     model = ultralytics.YOLO(
-        "/mnt/4TB1/onj/onj_project/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
+        # "/mnt/aix22301/onj/onj_project/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
     )
 
     if modal == Modal.CT:
@@ -54,14 +54,14 @@ def train(cfg: DictConfig):
     elif modal == Modal.PA:
         imgsz = cfg.data.PA_dim
 
-    dataset_yaml = "/mnt/4TB1/onj/onj_project/data/yolo_dataset.yaml"
+    dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
     model.train(data=dataset_yaml, epochs=10, device="2", batch=-1, imgsz=list(imgsz), scale=0.0, mosaic=1.0)
 
     # CT prediction
     if modal == Modal.CT:
         results = model.predict(
-            "/mnt/4TB1/onj/dataset/v0/YOLO/images/train/EW-0012_20200216_MDCT_axial_60.jpg",
+            "/mnt/aix22301/onj/dataset/v0/YOLO/images/train/EW-0012_20200216_MDCT_axial_60.jpg",
             conf=0.01,
             save=True,
         )
@@ -69,7 +69,7 @@ def train(cfg: DictConfig):
     # PA prediction
     elif modal == Modal.PA:
         results = model.predict(
-            "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/20160116.jpg",
+            "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/20160116.jpg",
             conf=0.01,
             save=True,
         )
@@ -79,7 +79,7 @@ def train(cfg: DictConfig):
 def test(cfg: DictConfig):
     modal = Modal.PA
     model = ultralytics.YOLO(
-        # "/mnt/4TB1/onj/onj_project/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
+        # "/mnt/aix22301/onj/code/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
     )
     # CT prediction
     if modal == Modal.CT:
@@ -89,38 +89,38 @@ def test(cfg: DictConfig):
     # elif modal == Modal.PA:
     #     predict(
     #         model,
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/20160116.jpg",
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/label.json",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/20160116.jpg",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0015/panorama/label.json",
     #         output_dir=os.getcwd(),
     #     )
 
     #     predict(
     #         model,
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0019/panorama/20210506.jpg",
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0019/panorama/label.json",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0019/panorama/20210506.jpg",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0019/panorama/label.json",
     #         output_dir=os.getcwd(),
     #     )
 
     #     predict(
     #         model,
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0055/panorama/20110916.jpg",
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0055/panorama/label.json",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0055/panorama/20110916.jpg",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0055/panorama/label.json",
     #         output_dir=os.getcwd(),
     #     )
 
     #     predict(
     #         model,
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0065/panorama/20160802.jpg",
-    #         "/mnt/4TB1/onj/dataset/v0/ONJ_labeling/EW-0065/panorama/label.json",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0065/panorama/20160802.jpg",
+    #         "/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0065/panorama/label.json",
     #         output_dir=os.getcwd(),
     #     )
 
         # predict(
         #     model,
-        #     "/mnt/4TB1/onj/dataset/v0/CLS_PA/Non_ONJ/EW-0002.jpg",
+        #     "/mnt/aix22301/onj/dataset/v0/CLS_PA/Non_ONJ/EW-0002.jpg",
         # )
 
 
 if __name__ == "__main__":
-    # train()
-    test()
+    train()
+    # test()

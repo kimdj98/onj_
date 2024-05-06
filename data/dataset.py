@@ -1,5 +1,7 @@
 # dataset.py
 # TODO: Add the code to load the data from the split and create a dictionary of the data
+import sys
+sys.path.append("/mnt/aix22301/onj/code/data")
 import hydra
 import torch
 import json
@@ -24,7 +26,7 @@ from monai.transforms import (
 )
 from monai.config.type_definitions import NdarrayTensor
 from monai.visualize.utils import blend_images, matshow3d  ## label과 Image를 합친 영상  ## 3d image의 visulization
-from mamba_ssm import Mamba
+# from mamba_ssm import Mamba
 import torch
 from utils import Modal, Direction
 

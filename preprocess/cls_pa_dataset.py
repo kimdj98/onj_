@@ -36,7 +36,7 @@ def main(cfg: DictConfig) -> None:
         os.makedirs(f"{BASE_PATH}/{DATA_PATH}/Non_ONJ")
 
     copy_PA(BASE_PATH / "ONJ_labeling", BASE_PATH / "CLS_PA" / "ONJ")
-    copy_PA(BASE_PATH / "Non_ONJ", BASE_PATH / "CLS_PA" / "Non_ONJ")
+    copy_PA(BASE_PATH / "Non_ONJ_soi", BASE_PATH / "CLS_PA" / "Non_ONJ")
 
 
 if __name__ == "__main__":
