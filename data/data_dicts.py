@@ -69,22 +69,22 @@ def add_ClinicalData_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool 
     pass
 
 
-def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [0.8, 0.1, 0.1]):
+def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [0.80, 0.19, 0.01], random_state: int = 42):
     ONJ_PATH = BASE_PATH / "ONJ_labeling"
     NON_ONJ_PATH = BASE_PATH / "Non_ONJ_soi"
 
     data_dicts = []
     patients = list(ONJ_PATH.glob("*")) + list(NON_ONJ_PATH.glob("*"))
     labels = [1] * len(list(ONJ_PATH.glob("*"))) + [0] * len(list(NON_ONJ_PATH.glob("*")))
-
+    random_state = random_state
     # train val test split
     # random_state is the seed used by the random number generator
+    
     patients_train, patients_test, labels_train, labels_test = train_test_split(
-        patients, labels, test_size=split_ratio[2], random_state=42
+        patients, labels, test_size=split_ratio[2], random_state=random_state
     )
-
     patients_train, patients_val, labels_train, labels_val = train_test_split(
-        patients_train, labels_train, test_size=split_ratio[1], random_state=42
+        patients_train, labels_train, test_size=split_ratio[1], random_state=random_state
     )
 
     def helper(data_dicts: list, patients: list, labels: list, includes: list):

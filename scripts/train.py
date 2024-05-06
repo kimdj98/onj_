@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/mnt/4TB1/onj/onj_project")
+sys.path.append("/mnt/aix22301/onj/code")
 
 import time
 from pathlib import Path
@@ -39,7 +39,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
 
-def plot_auroc(y_true, y_scores, epoch):
+def plot_auroc(y_true, y_scores, epoch:int, title:str = "roc"):
     fpr, tpr, _ = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
     plt.figure()
@@ -52,7 +52,7 @@ def plot_auroc(y_true, y_scores, epoch):
     plt.ylabel("True Positive Rate")
     plt.title(f"Receiver Operating Characteristic - Epoch {epoch}")
     plt.legend(loc="lower right")
-    plt.savefig("roc.png")
+    plt.savefig(f"{title}.png")
     plt.close()
 
 
@@ -81,7 +81,8 @@ def train(cfg):
 
     # Create data_dicts -> dataset -> dataloader
     BASE_PATH = Path(cfg.data.data_dir)
-    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT])
+    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT], random_state=cfg.data.random_state)
+    # train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT])
 
     train_dataset = Dataset(data=train_data_dicts, transform=transforms)
     train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)
@@ -119,9 +120,10 @@ def train(cfg):
     with open("results.txt", "w") as f:
         f.write("Results\n")
 
+    best_AUROC = 0.0
+    best_ACC = 0.0
     # training loop
     for epoch in range(cfg.train.epoch):
-        best_AUROC = 0.0
         model.train()
         running_loss = 0.0
 
@@ -199,7 +201,7 @@ def train(cfg):
 
             if auroc_val > best_AUROC:  # when AUROC is improved
                 # plot auroc curve
-                plot_auroc(true_labels, predictions, epoch)
+                plot_auroc(true_labels, predictions, epoch, title=f"best_auroc")
 
                 # save model
                 best_AUROC = auroc_val
@@ -207,9 +209,17 @@ def train(cfg):
                 torch.save(model.state_dict(), f"{cfg.model.name}_best.pth")
                 print(f"Best model saved {cfg.model.name}_best.pth")
 
+            if acc_val > best_ACC:
+                # plot auroc curve
+                plot_auroc(true_labels, predictions, epoch, title=f"best_acc")
+                
+                best_ACC = acc_val
+
             # save results
             with open("results.txt", "a") as f:
                 f.write(f"Epoch {epoch} auroc: {auroc_val:.4f}, acc: {acc_val:.4f}\n")
+
+            plot_auroc(true_labels, predictions, epoch, title=f"roc_{epoch}")
 
             auroc.reset()
             acc.reset()
