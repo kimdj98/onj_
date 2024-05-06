@@ -1,3 +1,4 @@
+# File Description: Check if output.nii.gz exists in nifti folder for each patient
 import os
 import sys
 import hydra

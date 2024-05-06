@@ -1,3 +1,7 @@
+# yolo_pa_dataset.py: This script is used to create a dataset for YOLO_PA_train, YOLO_PA_val, and YOLO_PA_test. 
+# The dataset is created by copying the images and label.json files from the ONJ_labeling folder to the YOLO_PA folder.
+# The script reads the train.txt, val.txt, and test.txt files to get the list of patients and then copies the images and label.json files to the respective folders in the YOLO_PA folder.
+
 import yaml
 from pathlib import Path
 
