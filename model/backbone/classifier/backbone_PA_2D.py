@@ -186,8 +186,9 @@ def main(cfg: DictConfig):
     #     "/mnt/4TB1/onj/onj_project/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
     # )
 
-    yolo_model = ultralytics.YOLO("/mnt/4TB1/onj/onj_project/outputs/2024-03-12/yolo_v8n/yolov8n.pt")
+    yolo_model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
 
+    # Freeze YOLO model
     # for param in yolo_model.parameters():
     #     param.requires_grad = False
 
@@ -195,7 +196,7 @@ def main(cfg: DictConfig):
 
     model = YOLOClassifier(yolo_model, classifier_model)
 
-    dataset = ImageFolder(root="/mnt/4TB1/onj/dataset/v0/CLS_PA/", transform=transform)
+    dataset = ImageFolder(root="/mnt/aix22301/onj/dataset/v0/CLS_PA/", transform=transform)
 
     # Splitting dataset into train and validation
     train_size = int(0.8 * len(dataset))
@@ -207,18 +208,18 @@ def main(cfg: DictConfig):
 
     criterion = nn.CrossEntropyLoss()  # Combines a Sigmoid layer and the BCELoss in one single class
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train_PA.lr, weight_decay=cfg.train_PA.weight_decay)
 
     # check if cuda is available
     print("Checking GPU availability: ", torch.cuda.is_available())
     print("Number of available gpu counts: ", torch.cuda.device_count())
 
-    device = f"cuda:{cfg.train.gpu}"
+    device = f"cuda:{cfg.train_PA.gpu}"
 
     # train in 10 epochs with gpu
     model.to(device)
 
-    for epoch in range(cfg.train.epoch):
+    for epoch in range(cfg.train_PA.epoch):
         # try:
         #     # model.train()  # set model to training mode
         # except:
@@ -254,7 +255,7 @@ def main(cfg: DictConfig):
                     FN += 1
 
         print(
-            f"[TRAIN] Epoch {epoch+1}/{cfg.train.epoch}, Training Loss: {cumulated_loss/(len(train_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
+            f"[TRAIN] Epoch {epoch+1}/{cfg.train_PA.epoch}, Training Loss: {cumulated_loss/(len(train_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
         )
 
         # model.eval()
@@ -284,7 +285,7 @@ def main(cfg: DictConfig):
                         FN += 1
             try:
                 print(
-                    f"[VALID] Epoch {epoch+1}/{cfg.train.epoch}, Validation Loss: {cumulated_loss/(len(validation_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
+                    f"[VALID] Epoch {epoch+1}/{cfg.train_PA.epoch}, Validation Loss: {cumulated_loss/(len(validation_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
                 )
             except:
                 pass
