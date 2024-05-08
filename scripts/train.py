@@ -38,8 +38,10 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
+import wandb
 
-def plot_auroc(y_true, y_scores, epoch:int, title:str = "roc"):
+
+def plot_auroc(y_true, y_scores, epoch: int, title: str = "roc"):
     fpr, tpr, _ = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
     plt.figure()
@@ -59,6 +61,7 @@ def plot_auroc(y_true, y_scores, epoch:int, title:str = "roc"):
 @hydra.main(version_base="1.1", config_path="../config", config_name="config")
 def train(cfg):
     # step1: load data
+    wandb.init(project="ONJ_classification", name="CT_backbone_debug")
     CT_dim_x = cfg.data.CT_dim[0]
     CT_dim_y = cfg.data.CT_dim[1]
 
@@ -81,7 +84,9 @@ def train(cfg):
 
     # Create data_dicts -> dataset -> dataloader
     BASE_PATH = Path(cfg.data.data_dir)
-    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT], random_state=cfg.data.random_state)
+    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(
+        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT], random_state=cfg.data.random_state
+    )
     # train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT])
 
     train_dataset = Dataset(data=train_data_dicts, transform=transforms)
@@ -107,7 +112,7 @@ def train(cfg):
     loss = CrossEntropyLoss()
     auroc = BinaryAUROC()
     acc = BinaryAccuracy()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
     # scheduler = StepLR(optimizer, step_size=cfg.train.scheduler_step_size)  # , gamma=cfg.train.scheduler_gamma)
 
     # switch model and dataset device to cuda
@@ -140,10 +145,9 @@ def train(cfg):
 
             p = output.detach()
             p = F.softmax(p, dim=1)
-            p = p[0]
 
-            auroc.update(p[1].unsqueeze(0), batch["CT_label"])
-            acc.update(p[1].unsqueeze(0), batch["CT_label"])
+            auroc.update(p[:, 1], batch["CT_label"])
+            acc.update(p[:, 1], batch["CT_label"])
 
             optimizer.step()
 
@@ -151,8 +155,9 @@ def train(cfg):
 
             if ((i + 1) % 50) == 0:
                 train_iterator.set_postfix(
-                    loss=f"{running_loss / 10:.4f}", auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}"
+                    loss=f"{running_loss / 50:.4f}", auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}"
                 )
+                wandb.log({"train_loss": running_loss / 50})
                 running_loss = 0.0
 
         # scheduler.step()
@@ -161,6 +166,7 @@ def train(cfg):
         acc_val = acc.compute()
 
         print(f"\nEpoch {epoch} - Training AUROC: {auroc_val:.4f}, Training ACC: {acc_val:.4f}")
+        wandb.log({"train_auroc": auroc_val, "train_acc": acc_val})
 
         # reset metrics
         auroc.reset()
@@ -173,6 +179,7 @@ def train(cfg):
 
             model.eval()
             val_iterator = tqdm(val_dataloader, desc=f"Validating")
+            running_loss = 0.0
             for i, batch in enumerate(val_iterator):
 
                 batch["CT_image"] = batch["CT_image"].to(device)
@@ -180,24 +187,36 @@ def train(cfg):
 
                 output = model(batch["CT_image"])
                 loss_value = loss(output, batch["CT_label"])
+                running_loss += loss_value.item()
 
                 p = output.detach()
                 p = F.softmax(p, dim=1)
-                p = p[0]
 
-                auroc.update(p[1].unsqueeze(0), batch["CT_label"])
-                acc.update(p[1].unsqueeze(0), batch["CT_label"])
+                auroc.update(p[:, 1], batch["CT_label"])
+                acc.update(p[:, 1], batch["CT_label"])
 
                 true_labels.extend(batch["CT_label"].cpu().numpy())
                 predictions.extend(p[1].unsqueeze(0).cpu().numpy())
 
                 if i == len(val_iterator) - 1:
-                    val_iterator.set_postfix(auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}")
+                    val_iterator.set_postfix(
+                        loss=f"{running_loss / len(val_iterator):.4f}",
+                        auroc=f"{auroc.compute():.4f}",
+                        acc=f"{acc.compute():.4f}",
+                    )
+                    wandb.log(
+                        {
+                            "val_loss": running_loss / len(val_iterator),
+                            "val_auroc": auroc.compute(),
+                            "val_acc": acc.compute(),
+                        }
+                    )
 
             auroc_val = auroc.compute()
             acc_val = acc.compute()
 
             print(f"\nEpoch {epoch} - Validation AUROC: {auroc_val:.4f}, Validation ACC: {acc_val:.4f}")
+            wandb.log({"val_auroc": auroc_val, "val_acc": acc_val})
 
             if auroc_val > best_AUROC:  # when AUROC is improved
                 # plot auroc curve
@@ -212,7 +231,7 @@ def train(cfg):
             if acc_val > best_ACC:
                 # plot auroc curve
                 plot_auroc(true_labels, predictions, epoch, title=f"best_acc")
-                
+
                 best_ACC = acc_val
 
             # save results
