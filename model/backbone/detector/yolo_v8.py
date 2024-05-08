@@ -45,9 +45,7 @@ def predict(model: torch.nn.Module, image: str, label: str = None, output_dir: s
 @hydra.main(version_base="1.1", config_path="../../../config", config_name="config")
 def train(cfg: DictConfig):
     modal = Modal.PA
-    model = ultralytics.YOLO(
-        "/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt"
-    )
+    model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
 
     if modal == Modal.CT:
         imgsz = cfg.data.CT_dim
@@ -115,12 +113,11 @@ def test(cfg: DictConfig):
     #         output_dir=os.getcwd(),
     #     )
 
-        # predict(
-        #     model,
-        #     "/mnt/aix22301/onj/dataset/v0/CLS_PA/Non_ONJ/EW-0002.jpg",
-        # )
+    # predict(
+    #     model,
+    #     "/mnt/aix22301/onj/dataset/v0/CLS_PA/Non_ONJ/EW-0002.jpg",
+    # )
 
 
 if __name__ == "__main__":
     train()
-    # test()
