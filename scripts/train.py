@@ -61,6 +61,7 @@ def plot_auroc(y_true, y_scores, epoch: int, title: str = "roc"):
 def train(cfg):
     # step1: load data
     wandb.init(project="ONJ_classification", name=f"{cfg.train.description}")
+    # wandb.config.update(cfg)
     CT_dim_x = cfg.data.CT_dim[0]
     CT_dim_y = cfg.data.CT_dim[1]
 
@@ -161,8 +162,8 @@ def train(cfg):
                 running_loss = 0.0
 
         # update learning rate
-        wandb.log({"lr": scheduler.get_last_lr()})
-        scheduler.step()
+        wandb.log({"lr": scheduler.get_last_lr()[0]})
+        # scheduler.step()
 
         auroc_val = auroc.compute()
         acc_val = acc.compute()

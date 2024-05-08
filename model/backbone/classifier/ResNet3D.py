@@ -82,11 +82,11 @@ class Bottleneck3D(nn.Module):
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
+        out = F.silu(self.bn1(self.conv1(x)))
+        out = F.silu(self.bn2(self.conv2(out)))
         out = self.bn3(self.conv3(out))
         out += self.shortcut(x)
-        out = F.relu(out)
+        out = F.silu(out)
         return out
 
 

@@ -14,8 +14,8 @@ train:
   # gpu: 1 
   # description: "null"
   batch_size: 1
-  epoch: 30
-  lr: 0.0003
+  epoch: 50
+  lr: 0.00003
 
   pretrained: null
   scheduler_step_size: 1

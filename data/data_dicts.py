@@ -69,7 +69,9 @@ def add_ClinicalData_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool 
     pass
 
 
-def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [0.80, 0.19, 0.01], random_state: int = 42):
+def get_data_dicts(
+    BASE_PATH: Path, includes: list[Modal], split_ratio: list = [0.80, 0.19, 0.01], random_state: int = 42
+):
     ONJ_PATH = BASE_PATH / "ONJ_labeling"
     NON_ONJ_PATH = BASE_PATH / "Non_ONJ_soi"
 
@@ -79,7 +81,7 @@ def get_data_dicts(BASE_PATH: Path, includes: list[Modal], split_ratio: list = [
     random_state = random_state
     # train val test split
     # random_state is the seed used by the random number generator
-    
+
     patients_train, patients_test, labels_train, labels_test = train_test_split(
         patients, labels, test_size=split_ratio[2], random_state=random_state
     )
