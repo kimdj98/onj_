@@ -215,7 +215,7 @@ def main(cfg: DictConfig):
     print("Checking GPU availability: ", torch.cuda.is_available())
     print("Number of available gpu counts: ", torch.cuda.device_count())
 
-    device = f"cuda:{cfg.train_PA.gpu}"
+    device = f"cuda:{cfg.train.gpu}"
 
     # train in 10 epochs with gpu
     model.to(device)
@@ -258,7 +258,15 @@ def main(cfg: DictConfig):
         print(
             f"[TRAIN] Epoch {epoch+1}/{cfg.train_PA.epoch}, Training Loss: {cumulated_loss/(len(train_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
         )
-        wandb.log({"train_loss": cumulated_loss/(len(train_loader)*2), "train_accuracy": (TP + TN) / (TP + TN + FP + FN), "train_precision": TP / (TP + FP), "train_recall": TP / (TP + FN), "train_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN))})
+        wandb.log(
+            {
+                "train_loss": cumulated_loss / (len(train_loader) * 2),
+                "train_accuracy": (TP + TN) / (TP + TN + FP + FN),
+                "train_precision": TP / (TP + FP),
+                "train_recall": TP / (TP + FN),
+                "train_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)),
+            }
+        )
 
         # model.eval()
         with torch.no_grad():
@@ -289,7 +297,15 @@ def main(cfg: DictConfig):
                 print(
                     f"[VALID] Epoch {epoch+1}/{cfg.train_PA.epoch}, Validation Loss: {cumulated_loss/(len(validation_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
                 )
-                wandb.log({"val_loss": cumulated_loss/(len(train_loader)*2), "val_accuracy": (TP + TN) / (TP + TN + FP + FN), "val_precision": TP / (TP + FP), "val_recall": TP / (TP + FN), "val_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN))})
+                wandb.log(
+                    {
+                        "val_loss": cumulated_loss / (len(train_loader) * 2),
+                        "val_accuracy": (TP + TN) / (TP + TN + FP + FN),
+                        "val_precision": TP / (TP + FP),
+                        "val_recall": TP / (TP + FN),
+                        "val_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)),
+                    }
+                )
 
             except:
                 pass

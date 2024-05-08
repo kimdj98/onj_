@@ -1,5 +1,5 @@
 train_PA:
-  gpu: 1 # device
+  # gpu: 1 # device
   batch_size: 4
   epoch: 100
   lr: 0.00001
@@ -9,10 +9,13 @@ train_PA:
   scheduler_step_size: 1
 
 train:
-  gpu: 1 # device
+  # commented out for manual device selection
+  # example: python3 code/scripts/train.py train.gpu=1
+  # gpu: 1 
+  # description: "null"
   batch_size: 1
   epoch: 30
-  lr: 0.00003
+  lr: 0.0003
 
   pretrained: null
   scheduler_step_size: 1

@@ -29,12 +29,11 @@ from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet5
 # from losses.losses import CrossEntropyLoss # custom loss
 from torch.nn import CrossEntropyLoss  # standard loss
 from torch.nn import functional as F
-from torch.optim.lr_scheduler import StepLR
+import torch.optim as optim
 from torcheval.metrics import BinaryAUROC
 from torcheval.metrics import BinaryAccuracy
 
 from tqdm import tqdm
-
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
@@ -61,7 +60,7 @@ def plot_auroc(y_true, y_scores, epoch: int, title: str = "roc"):
 @hydra.main(version_base="1.1", config_path="../config", config_name="config")
 def train(cfg):
     # step1: load data
-    wandb.init(project="ONJ_classification", name="CT_backbone_debug")
+    wandb.init(project="ONJ_classification", name=f"{cfg.train.description}")
     CT_dim_x = cfg.data.CT_dim[0]
     CT_dim_y = cfg.data.CT_dim[1]
 
@@ -107,14 +106,15 @@ def train(cfg):
 
     if cfg.train.pretrained:
         model.load_state_dict(torch.load(cfg.train.pretrained))
-        print("Pretrained model loaded")
+        print(f"Pretrained model {cfg.train.pretrained} loaded")
 
     loss = CrossEntropyLoss()
     auroc = BinaryAUROC()
     acc = BinaryAccuracy()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
-    # scheduler = StepLR(optimizer, step_size=cfg.train.scheduler_step_size)  # , gamma=cfg.train.scheduler_gamma)
-
+    scheduler = optim.lr_scheduler.LambdaLR(
+        optimizer=optimizer, lr_lambda=lambda epoch: 0.95**epoch, last_epoch=-1, verbose=False
+    )
     # switch model and dataset device to cuda
     device = torch.device(f"cuda:{cfg.train.gpu}" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -160,7 +160,9 @@ def train(cfg):
                 wandb.log({"train_loss": running_loss / 50})
                 running_loss = 0.0
 
-        # scheduler.step()
+        # update learning rate
+        wandb.log({"lr": scheduler.get_last_lr()})
+        scheduler.step()
 
         auroc_val = auroc.compute()
         acc_val = acc.compute()
@@ -196,7 +198,7 @@ def train(cfg):
                 acc.update(p[:, 1], batch["CT_label"])
 
                 true_labels.extend(batch["CT_label"].cpu().numpy())
-                predictions.extend(p[1].unsqueeze(0).cpu().numpy())
+                predictions.extend(p[:, 1].cpu().numpy())
 
                 if i == len(val_iterator) - 1:
                     val_iterator.set_postfix(
@@ -229,7 +231,7 @@ def train(cfg):
                 print(f"Best model saved {cfg.model.name}_best.pth")
 
             if acc_val > best_ACC:
-                # plot auroc curve
+                # plot auroc curve at best acc epoch
                 plot_auroc(true_labels, predictions, epoch, title=f"best_acc")
 
                 best_ACC = acc_val
