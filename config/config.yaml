@@ -1,19 +1,18 @@
 train_PA:
   gpu: 1 # device
-  batch_size: 1
-  epoch: 30
-  lr: 0.00002
-  weight_decay: 0.01
+  batch_size: 4
+  epoch: 100
+  lr: 0.00001
+  weight_decay: 0.0001
 
   pretrained: null
   scheduler_step_size: 1
 
-train_CT:
+train:
   gpu: 1 # device
   batch_size: 1
   epoch: 30
   lr: 0.00003
-  weight_decay: 0.0001
 
   pretrained: null
   scheduler_step_size: 1

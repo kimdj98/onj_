@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import hydra
 from omegaconf import DictConfig
 import ultralytics
+import wandb
 
 # from ultralytics.yolo.utils.ops import non_max_suppression
 from ultralytics.nn.tasks import DetectionModel
@@ -203,8 +204,8 @@ def main(cfg: DictConfig):
     validation_size = len(dataset) - train_size
     train_dataset, validation_dataset = random_split(dataset, [train_size, validation_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-    validation_loader = DataLoader(validation_dataset, batch_size=2, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.train_PA.batch_size, shuffle=True)
+    validation_loader = DataLoader(validation_dataset, batch_size=cfg.train_PA.batch_size, shuffle=False)
 
     criterion = nn.CrossEntropyLoss()  # Combines a Sigmoid layer and the BCELoss in one single class
 
@@ -257,6 +258,7 @@ def main(cfg: DictConfig):
         print(
             f"[TRAIN] Epoch {epoch+1}/{cfg.train_PA.epoch}, Training Loss: {cumulated_loss/(len(train_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
         )
+        wandb.log({"train_loss": cumulated_loss/(len(train_loader)*2), "train_accuracy": (TP + TN) / (TP + TN + FP + FN), "train_precision": TP / (TP + FP), "train_recall": TP / (TP + FN), "train_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN))})
 
         # model.eval()
         with torch.no_grad():
@@ -287,9 +289,15 @@ def main(cfg: DictConfig):
                 print(
                     f"[VALID] Epoch {epoch+1}/{cfg.train_PA.epoch}, Validation Loss: {cumulated_loss/(len(validation_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
                 )
+                wandb.log({"val_loss": cumulated_loss/(len(train_loader)*2), "val_accuracy": (TP + TN) / (TP + TN + FP + FN), "val_precision": TP / (TP + FP), "val_recall": TP / (TP + FN), "val_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN))})
+
             except:
                 pass
 
 
 if __name__ == "__main__":
+    wandb.init(
+        project=f"ONJ_classification",
+        name="PA_backbone",
+    )
     main()
