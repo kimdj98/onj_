@@ -54,7 +54,9 @@ def train(cfg: DictConfig):
 
     dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
-    # model.train(data=dataset_yaml, lr0=1e-3, lrf=0.01, epochs=10, device="0", batch=-1, imgsz=list(imgsz), scale=0.0, mosaic=1.0)
+    model.train(
+        data=dataset_yaml, lr0=1e-3, lrf=0.01, epochs=10, device="0", batch=-1, imgsz=list(imgsz), scale=0.0, mosaic=1.0
+    )
 
     # CT prediction
     if modal == Modal.CT:

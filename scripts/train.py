@@ -23,6 +23,9 @@ from monai.transforms import (
     Rotate90d,
     Flipd,
     Resized,
+    RandAffined,
+    RandFlipd,
+    RandGaussianNoised,
 )
 from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet50_3d, resnet101_3d
 
@@ -70,7 +73,9 @@ def train(cfg):
             LoadImaged(keys=["CT_image"]),
             EnsureChannelFirstd(keys=["CT_image"]),
             LoadJsonLabeld(keys=["CT_annotation"]),  # Use the custom transform for labels
-            ScaleIntensityRanged(keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
+            ScaleIntensityRanged(
+                keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=False
+            ),  # NOTE: check the range
             # ScaleIntensityRangePercentilesd(
             #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
             # ),
@@ -78,6 +83,17 @@ def train(cfg):
             Flipd(keys=["CT_image"], spatial_axis=2),
             SelectSliced(keys=["CT_image", "CT_SOI"]),
             Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
+            RandAffined(
+                mode="bilinear",
+                keys=["CT_image"],
+                prob=0.5,
+                spatial_size=(CT_dim_x, CT_dim_y, 64),
+                # rotate_range=(0.2, 0.2, 0.2),
+                # translate_range=(10, 10, 10),
+                # scale_range=(0.1, 0.1, 0.1),
+            ),
+            # RandFlipd(keys=["CT_image"], spatial_axis=0, prob=0.5),
+            # RandGaussianNoised(keys=["CT_image"], std=0.01, prob=0.5),
             ToTensord(keys=["CT_image"]),
         ]
     )
@@ -112,7 +128,7 @@ def train(cfg):
     loss = CrossEntropyLoss()
     auroc = BinaryAUROC()
     acc = BinaryAccuracy()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
     scheduler = optim.lr_scheduler.LambdaLR(
         optimizer=optimizer, lr_lambda=lambda epoch: 0.95**epoch, last_epoch=-1, verbose=False
     )
@@ -163,7 +179,7 @@ def train(cfg):
 
         # update learning rate
         wandb.log({"lr": scheduler.get_last_lr()[0]})
-        # scheduler.step()
+        scheduler.step()
 
         auroc_val = auroc.compute()
         acc_val = acc.compute()
@@ -210,8 +226,8 @@ def train(cfg):
                     wandb.log(
                         {
                             "val_loss": running_loss / len(val_iterator),
-                            "val_auroc": auroc.compute(),
-                            "val_acc": acc.compute(),
+                            # "val_auroc": auroc.compute(),
+                            # "val_acc": acc.compute(),
                         }
                     )
 

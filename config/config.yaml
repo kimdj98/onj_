@@ -16,6 +16,7 @@ train:
   batch_size: 1
   epoch: 50
   lr: 0.00003
+  weight_decay: 0.0001
 
   pretrained: null
   scheduler_step_size: 1
@@ -24,7 +25,7 @@ model:
   name: resnet50 # resnet18, resnet50
 
 data:
-  random_state: 42
+  random_state: 21
   data_version: v0 # dataset version
   CT_dim: [512, 512]
   PA_dim: [2048, 1024]
