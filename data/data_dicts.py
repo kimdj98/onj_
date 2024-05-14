@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/mnt/4TB1/onj/onj_project")
+sys.path.append("/mnt/aix22301/onj/code")
 
 import torch
 import json
@@ -57,15 +57,22 @@ def add_CT_data_dicts(
         )
 
 
-def add_panorama_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
-    pass
+def update_panorama_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
+    if exists:
+        modal_dir = PATIENT_PATH / "panorama"
+        jpg_path = list(modal_dir.glob("*.jpg"))[0]
+
+        # update the last data_dicts in the list
+        data_dicts[-1]["panorama_image"] = jpg_path
+        # data_dicts[-1]["panorama_annotation"] = modal_dir / "label.json"
+        data_dicts[-1]["panorama_label"] = ONJ
 
 
 def add_BoneSPECT_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     pass
 
 
-def add_ClinicalData_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
+def update_ClincalData_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     pass
 
 
@@ -97,17 +104,49 @@ def get_data_dicts(
             bonespect_exists = (patient / "BoneSPECT").is_dir()
             clinicaldata_exists = (patient / "ClinicalData").is_dir()
 
-            if Modal.MDCT in includes:
-                add_CT_data_dicts(Modal.MDCT, data_dicts, patient, label, mdct_exists)
-            # if not mdct_exists or not cbct_exists: # when MDCT and CBCT both exists in the patient use only MDCT
-            if Modal.CBCT in includes:
-                add_CT_data_dicts(Modal.CBCT, data_dicts, patient, label, cbct_exists)
+            if Modal.CBCT in includes and Modal.MDCT in includes:  # if both MDCT and CBCT are included
+                if not mdct_exists and not cbct_exists:  # and if both MDCT and CBCT does not exist
+                    continue
+
+            elif Modal.CBCT in includes:  # if only CBCT is included not MDCT
+                if not cbct_exists:
+                    continue
+
+            elif Modal.MDCT in includes:  # if only MDCT is included not CBCT
+                if not mdct_exists:
+                    continue
+
             if Modal.panorama in includes:
-                add_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
-            if Modal.BoneSPECT in includes:
-                add_BoneSPECT_data_dicts(data_dicts, patient, label, bonespect_exists)
-            if Modal.ClinicalData in includes:
-                add_ClinicalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
+                if not panorama_exists:
+                    continue
+
+            if mdct_exists and cbct_exists:
+                if Modal.MDCT in includes:
+                    # NOTE: (add) adds creates data_dicts to the list, (update) updates the last data_dicts in the list.
+                    # So if both MDCT and CBCT exists add MDCT and update panorama and ClincalData
+                    #                             and add CBCT and update panorama and ClincalData to use MDCT and CBCT as seperate data
+                    add_CT_data_dicts(Modal.MDCT, data_dicts, patient, label, mdct_exists)
+                    if Modal.panorama in includes:
+                        update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                    if Modal.ClinicalData:
+                        update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
+                if Modal.CBCT in includes:
+                    add_CT_data_dicts(Modal.CBCT, data_dicts, patient, label, cbct_exists)
+                    if Modal.panorama in includes:
+                        update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                    if Modal.ClinicalData:
+                        update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
+            else:
+                if Modal.MDCT in includes:
+                    add_CT_data_dicts(Modal.MDCT, data_dicts, patient, label, mdct_exists)
+                if Modal.CBCT in includes:
+                    add_CT_data_dicts(Modal.CBCT, data_dicts, patient, label, cbct_exists)
+                if Modal.panorama in includes:
+                    update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                if Modal.ClinicalData in includes:
+                    update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
+                if Modal.BoneSPECT in includes:  # NOTE: no need to implement
+                    add_BoneSPECT_data_dicts(data_dicts, patient, label, bonespect_exists)
 
     train_data_dicts = []
     val_data_dicts = []
@@ -193,12 +232,16 @@ class SelectSliced(MapTransform):
 def main(cfg: DictConfig):
     CT_dim_x = cfg.data.CT_dim[0]
     CT_dim_y = cfg.data.CT_dim[1]
+    PA_dim_x = cfg.data.PA_dim[0]
+    PA_dim_y = cfg.data.PA_dim[1]
 
     transforms = Compose(
         [
             LoadImaged(keys=["CT_image"]),
-            EnsureChannelFirstd(keys=["CT_image"]),
+            LoadImaged(keys=["panorama_image"]),
+            EnsureChannelFirstd(keys=["CT_image", "panorama_image"]),
             LoadJsonLabeld(keys=["CT_annotation"]),  # Use the custom transform for labels
+            # LoadJsonLabeld(keys=["panorama_annotation"]),
             ScaleIntensityRanged(keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
             # ScaleIntensityRangePercentilesd(
             #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
@@ -207,19 +250,22 @@ def main(cfg: DictConfig):
             Flipd(keys=["CT_image"], spatial_axis=2),
             SelectSliced(keys=["CT_image", "CT_SOI"]),
             Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
+            Resized(keys=["panorama_image"], spatial_size=(PA_dim_x, PA_dim_y), mode="bilinear"),
             ToTensord(keys=["CT_image"]),
         ]
     )
 
     # Create data_dicts
     BASE_PATH = Path(cfg.data.data_dir)
-    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT, Modal.MDCT])
+    train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(
+        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT, Modal.panorama]
+    )
 
     # train:val:test = 299:38:41 (example)
 
     # Create a MONAI dataset
     dataset = Dataset(data=train_data_dicts, transform=transforms)
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
     print(f"Total patients: {dataset.__len__()}")
 
     # import 3d model
@@ -242,6 +288,10 @@ def main(cfg: DictConfig):
         print(data["CT_annotation"].shape)
         print(data["CT_SOI"])
         print(data["CT_label"])
+        print("=====================================")
+        print(data["panorama_image"].shape)
+        # print(data["panorama_annotation"])
+        print(data["panorama_label"])
         print("=====================================")
         if i == 10:
             break
