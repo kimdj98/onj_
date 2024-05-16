@@ -18,11 +18,26 @@ train:
   lr: 0.00003
   weight_decay: 0.0001
 
-  pretrained: null
+  pretrained_CT: null
+  pretrained_PA: null
+  pretrained_fusion: null
   scheduler_step_size: 1
 
 model:
-  name: resnet50 # resnet18, resnet50
+  CT: resnet50 # resnet18, resnet50
+  PA: yolo # no other options (240516)
+  fusion: concat # concat, (TODO: attention, mamba)
+
+  # expand PA feature vector size to match CT feature vector size
+  low_channels: 64
+  low_expanded: 512
+
+  mid_channels: 128
+  mid_expanded: 1024
+
+  high_channels: 256
+  high_expanded: 2048
+
 
 data:
   random_state: 21

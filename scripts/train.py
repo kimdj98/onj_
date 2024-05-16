@@ -29,6 +29,12 @@ from monai.transforms import (
 )
 from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet50_3d, resnet101_3d
 
+from model.backbone.classifier.backbone_PA_2D import ClassifierModel, YOLOClassifier
+import ultralytics
+
+from model.fusor.concat import ConcatModel
+from model.backbone.utils import FeatureExpand
+
 # from losses.losses import CrossEntropyLoss # custom loss
 from torch.nn import CrossEntropyLoss  # standard loss
 from torch.nn import functional as F
@@ -67,11 +73,13 @@ def train(cfg):
     # wandb.config.update(cfg)
     CT_dim_x = cfg.data.CT_dim[0]
     CT_dim_y = cfg.data.CT_dim[1]
+    PA_dim_x = cfg.data.PA_dim[0]
+    PA_dim_y = cfg.data.PA_dim[1]
 
     transforms = Compose(
         [
-            LoadImaged(keys=["CT_image"]),
-            EnsureChannelFirstd(keys=["CT_image"]),
+            LoadImaged(keys=["CT_image", "PA_image"]),
+            EnsureChannelFirstd(keys=["CT_image", "PA_image"]),
             LoadJsonLabeld(keys=["CT_annotation"]),  # Use the custom transform for labels
             ScaleIntensityRanged(
                 keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=False
@@ -83,6 +91,7 @@ def train(cfg):
             Flipd(keys=["CT_image"], spatial_axis=2),
             SelectSliced(keys=["CT_image", "CT_SOI"]),
             Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
+            Resized(keys=["PA_image"], spatial_size=(PA_dim_x, PA_dim_y), mode="bilinear"),
             RandAffined(
                 mode="bilinear",
                 keys=["CT_image"],
@@ -98,10 +107,11 @@ def train(cfg):
         ]
     )
 
+    # ======================================================================================
     # Create data_dicts -> dataset -> dataloader
     BASE_PATH = Path(cfg.data.data_dir)
     train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(
-        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT], random_state=cfg.data.random_state
+        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT, Modal.PA], random_state=cfg.data.random_state
     )
     # train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT])
 
@@ -114,15 +124,39 @@ def train(cfg):
     test_dataset = Dataset(data=test_data_dicts, transform=transforms)
     test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
 
+    # ======================================================================================
     # Initialize model, loss function, optimizer, metrics
-    if cfg.model.name == "resnet18":
-        model = resnet18_3d()
+    if cfg.model.CT == "resnet18":
+        model_3d = resnet18_3d()
 
-    elif cfg.model.name == "resnet50":
-        model = resnet50_3d()
+    elif cfg.model.CT == "resnet50":
+        model_3d = resnet50_3d()
 
-    if cfg.train.pretrained:
-        model.load_state_dict(torch.load(cfg.train.pretrained))
+    if cfg.train.pretrained_CT:
+        model.load_state_dict(torch.load(cfg.train.pretrained_CT))
+        print(f"Pretrained model {cfg.train.pretrained} loaded")
+
+    if cfg.model.PA == "yolo":
+        yolo_model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
+
+        classifier_model = ClassifierModel(num_classes=2)
+        model_2d = YOLOClassifier(yolo_model, classifier_model)
+
+    if cfg.train.pretrained_PA:
+        model.load_state_dict(torch.load(cfg.train.pretrained_PA))
+        print(f"Pretrained model {cfg.train.pretrained} loaded")
+
+    if cfg.model.fusion == "concat":
+        model = ConcatModel(model_2d, model_3d)
+
+    elif cfg.model.fusion == "attention":
+        pass
+
+    elif cfg.model.fusion == "mamba":
+        pass
+
+    if cfg.train.pretrained_fusion:
+        model.load_state_dict(torch.load(cfg.train.pretrained_fusion))
         print(f"Pretrained model {cfg.train.pretrained} loaded")
 
     loss = CrossEntropyLoss()
@@ -137,6 +171,15 @@ def train(cfg):
     print(f"Device: {device}")
 
     model = model.to(device)
+    feature_expand_low = FeatureExpand(in_channels=cfg.model.low_channels, out_channels=cfg.model.low_expanded).to(
+        device
+    )
+    feature_expand_middle = FeatureExpand(in_channels=cfg.model.mid_channels, out_channels=cfg.model.mid_expanded).to(
+        device
+    )
+    feature_expand_high = FeatureExpand(in_channels=cfg.model.high_channels, out_channels=cfg.model.high_expanded).to(
+        device
+    )
 
     # Create results.txt
     with open("results.txt", "w") as f:
@@ -151,12 +194,35 @@ def train(cfg):
 
         train_iterator = tqdm(train_dataloader, desc=f"Epoch {epoch}")
         for i, batch in enumerate(train_iterator):
+            assert (
+                batch["CT_label"] == batch["PA_label"]
+            )  # check if the labels are the same (if assertion fails, issue in data preprocessing!)
             # switch device
             batch["CT_image"] = batch["CT_image"].to(device)
             batch["CT_label"] = batch["CT_label"].to(device)
+            batch["PA_image"] = batch["PA_image"].to(device)
+            batch["PA_label"] = batch["PA_label"].to(device)
+
+            B, _, _, _ = batch["PA_image"].shape
 
             optimizer.zero_grad()
-            output = model(batch["CT_image"])
+            output_3d = model_3d(batch["CT_image"])
+            output_2d = model_2d(batch["PA_image"])
+
+            # Match the feature vector size of 2D and 3D
+            # tried to expand 2D to avoid information loss when shrink 3D feature vector to match 2D
+            low_features = feature_expand_low(model_2d.low_features)
+            middle_features = feature_expand_middle(model_2d.middle_features)
+            high_features = feature_expand_high(model_2d.high_features)
+
+            low_features = low_features.view(B, cfg.model.low_expanded, -1)
+            middle_features = middle_features.view(B, cfg.model.mid_expanded, -1)
+            high_features = high_features.view(B, cfg.model.high_expanded, -1)
+
+            feature_map2 = model_3d.feature_map2.view(B, cfg.model.low_expanded, -1)
+            feature_map3 = model_3d.feature_map3.view(B, cfg.model.mid_expanded, -1)
+            feature_map4 = model_3d.feature_map4.view(B, cfg.model.high_expanded, -1)
+
             loss_value = loss(output, batch["CT_label"])
             loss_value.backward()
 

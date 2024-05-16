@@ -57,15 +57,15 @@ def add_CT_data_dicts(
         )
 
 
-def update_panorama_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
+def update_PA_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
     if exists:
         modal_dir = PATIENT_PATH / "panorama"
         jpg_path = list(modal_dir.glob("*.jpg"))[0]
 
         # update the last data_dicts in the list
-        data_dicts[-1]["panorama_image"] = jpg_path
-        # data_dicts[-1]["panorama_annotation"] = modal_dir / "label.json"
-        data_dicts[-1]["panorama_label"] = ONJ
+        data_dicts[-1]["PA_image"] = jpg_path
+        # data_dicts[-1]["PA_annotation"] = modal_dir / "label.json"
+        data_dicts[-1]["PA_label"] = ONJ
 
 
 def add_BoneSPECT_data_dicts(data_dicts: list, PATIENT_PATH: Path, ONJ: bool = True, exists: bool = True):
@@ -100,7 +100,7 @@ def get_data_dicts(
         for patient, label in zip(patients, labels):
             mdct_exists = (patient / "MDCT").is_dir()
             cbct_exists = (patient / "CBCT").is_dir()
-            panorama_exists = (patient / "panorama").is_dir()
+            PA_exists = (patient / "panorama").is_dir()
             bonespect_exists = (patient / "BoneSPECT").is_dir()
             clinicaldata_exists = (patient / "ClinicalData").is_dir()
 
@@ -116,24 +116,24 @@ def get_data_dicts(
                 if not mdct_exists:
                     continue
 
-            if Modal.panorama in includes:
-                if not panorama_exists:
+            if Modal.PA in includes:
+                if not PA_exists:
                     continue
 
             if mdct_exists and cbct_exists:
                 if Modal.MDCT in includes:
                     # NOTE: (add) adds creates data_dicts to the list, (update) updates the last data_dicts in the list.
-                    # So if both MDCT and CBCT exists add MDCT and update panorama and ClincalData
-                    #                             and add CBCT and update panorama and ClincalData to use MDCT and CBCT as seperate data
+                    # So if both MDCT and CBCT exists add MDCT and update PA and ClincalData
+                    #                             and add CBCT and update PA and ClincalData to use MDCT and CBCT as seperate data
                     add_CT_data_dicts(Modal.MDCT, data_dicts, patient, label, mdct_exists)
-                    if Modal.panorama in includes:
-                        update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                    if Modal.PA in includes:
+                        update_PA_data_dicts(data_dicts, patient, label, PA_exists)
                     if Modal.ClinicalData:
                         update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
                 if Modal.CBCT in includes:
                     add_CT_data_dicts(Modal.CBCT, data_dicts, patient, label, cbct_exists)
-                    if Modal.panorama in includes:
-                        update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                    if Modal.PA in includes:
+                        update_PA_data_dicts(data_dicts, patient, label, PA_exists)
                     if Modal.ClinicalData:
                         update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
             else:
@@ -141,8 +141,8 @@ def get_data_dicts(
                     add_CT_data_dicts(Modal.MDCT, data_dicts, patient, label, mdct_exists)
                 if Modal.CBCT in includes:
                     add_CT_data_dicts(Modal.CBCT, data_dicts, patient, label, cbct_exists)
-                if Modal.panorama in includes:
-                    update_panorama_data_dicts(data_dicts, patient, label, panorama_exists)
+                if Modal.PA in includes:
+                    update_PA_data_dicts(data_dicts, patient, label, PA_exists)
                 if Modal.ClinicalData in includes:
                     update_ClincalData_data_dicts(data_dicts, patient, label, clinicaldata_exists)
                 if Modal.BoneSPECT in includes:  # NOTE: no need to implement
@@ -238,10 +238,10 @@ def main(cfg: DictConfig):
     transforms = Compose(
         [
             LoadImaged(keys=["CT_image"]),
-            LoadImaged(keys=["panorama_image"]),
-            EnsureChannelFirstd(keys=["CT_image", "panorama_image"]),
+            LoadImaged(keys=["PA_image"]),
+            EnsureChannelFirstd(keys=["CT_image", "PA_image"]),
             LoadJsonLabeld(keys=["CT_annotation"]),  # Use the custom transform for labels
-            # LoadJsonLabeld(keys=["panorama_annotation"]),
+            # LoadJsonLabeld(keys=["PA_annotation"]),
             ScaleIntensityRanged(keys=["CT_image"], a_min=-1000, a_max=2500, b_min=0.0, b_max=1.0, clip=True),
             # ScaleIntensityRangePercentilesd(
             #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
@@ -250,7 +250,7 @@ def main(cfg: DictConfig):
             Flipd(keys=["CT_image"], spatial_axis=2),
             SelectSliced(keys=["CT_image", "CT_SOI"]),
             Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
-            Resized(keys=["panorama_image"], spatial_size=(PA_dim_x, PA_dim_y), mode="bilinear"),
+            Resized(keys=["PA_image"], spatial_size=(PA_dim_x, PA_dim_y), mode="bilinear"),
             ToTensord(keys=["CT_image"]),
         ]
     )
@@ -258,7 +258,7 @@ def main(cfg: DictConfig):
     # Create data_dicts
     BASE_PATH = Path(cfg.data.data_dir)
     train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(
-        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT, Modal.panorama]
+        BASE_PATH, includes=[Modal.CBCT, Modal.MDCT, Modal.PA]
     )
 
     # train:val:test = 299:38:41 (example)
@@ -289,9 +289,9 @@ def main(cfg: DictConfig):
         print(data["CT_SOI"])
         print(data["CT_label"])
         print("=====================================")
-        print(data["panorama_image"].shape)
-        # print(data["panorama_annotation"])
-        print(data["panorama_label"])
+        print(data["PA_image"].shape)
+        # print(data["PA_annotation"])
+        print(data["PA_label"])
         print("=====================================")
         if i == 10:
             break

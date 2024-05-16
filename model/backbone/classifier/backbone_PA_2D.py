@@ -92,44 +92,33 @@ class ClassifierModel(nn.Module):
 class YOLOClassifier(nn.Module):
     def __init__(self, yolo_model, classifier_model):
         super(YOLOClassifier, self).__init__()
-        self.yolo_model = yolo_model
+        self.yolo_model = yolo_model.model
         self.classifier_model = classifier_model
-        self.low_features = []
-        self.middle_features = []
-        self.high_features = []
+        self.low_features = None
+        self.middle_features = None
+        self.high_features = None
+
+        self.yolo_model.model[15].register_forward_hook(self.hook_fn_low)
+        self.yolo_model.model[18].register_forward_hook(self.hook_fn_middle)
+        self.yolo_model.model[21].register_forward_hook(self.hook_fn_high)
 
     def hook_fn_low(self, module, input, output):
-        self.low_features.append(output)
+        self.low_features = output
 
     def hook_fn_middle(self, module, input, output):
-        self.middle_features.append(output)
+        self.middle_features = output
 
     def hook_fn_high(self, module, input, output):
-        self.high_features.append(output)
+        self.high_features = output
 
     # Define feature extraction function
-    def extract_features(self, img, layer_index=20):  ##Choose the layer that fit your application
-        self.low_features = []
-        self.middle_features = []
-        self.high_features = []
-
-        hook_low = self.yolo_model.model.model[15].register_forward_hook(self.hook_fn_low)
-        hook_middle = self.yolo_model.model.model[18].register_forward_hook(self.hook_fn_middle)
-        hook_high = self.yolo_model.model.model[21].register_forward_hook(self.hook_fn_high)
-
-        # with torch.no_grad():
+    def extract_features(self, img, layer_index=20):  # Choose the layer that fit your application
         self.yolo_model(img)
-
-        hook_low.remove()
-        hook_middle.remove()
-        hook_high.remove()
-
-        if self.low_features.__len__() == 1:
-            return self.low_features[0], self.middle_features[0], self.high_features[0]
-
-        return self.low_features[1], self.middle_features[1], self.high_features[1]
+        # if self.low_features.__len__() == 1:
+        return self.low_features, self.middle_features, self.high_features
 
     def forward(self, x):
+
         # yolo_out_1 = self.extract_features(x, layer_index=1) # torch.Size([1, 96, 512, 512])
         # yolo_out_2 = self.extract_features(x, layer_index=2) # torch.Size([2, 96, 512, 256])
         # yolo_out_3 = self.extract_features(x, layer_index=3) # torch.Size([2, 192, 256, 128])
@@ -151,6 +140,7 @@ class YOLOClassifier(nn.Module):
         # yolo_out_19 = self.extract_features(x, layer_index=19) # torch.Size([2, 384, 64, 32])
         # yolo_out_20 = self.extract_features(x, layer_index=20) # torch.Size([2, 960, 64, 32])
         # yolo_out_21 = self.extract_features(x, layer_index=21) # torch.Size([2, 576, 64, 32])
+
         yolo_out_15, yolo_out_18, yolo_out_21 = self.extract_features(x)
 
         classifier_out = self.classifier_model(yolo_out_15, yolo_out_18, yolo_out_21)
@@ -187,6 +177,7 @@ def main(cfg: DictConfig):
     #     "/mnt/4TB1/onj/onj_project/outputs/2024-03-12/yolo_v8m_epoch50/runs/detect/train/weights/last.pt"
     # )
 
+    # ====================================================================================================================
     yolo_model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
 
     # Freeze YOLO model
@@ -196,6 +187,8 @@ def main(cfg: DictConfig):
     classifier_model = ClassifierModel(num_classes=2)
 
     model = YOLOClassifier(yolo_model, classifier_model)
+    # ====================================================================================================================
+    # yolo_model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
 
     dataset = ImageFolder(root="/mnt/aix22301/onj/dataset/v0/CLS_PA/", transform=transform)
 
@@ -221,10 +214,9 @@ def main(cfg: DictConfig):
     model.to(device)
 
     for epoch in range(cfg.train_PA.epoch):
-        # try:
-        #     # model.train()  # set model to training mode
-        # except:
-        #     pass
+        model.yolo_model.model.train()
+        model.classifier_model.train()
+
         TP = 0
         FP = 0
         TN = 0
@@ -268,7 +260,8 @@ def main(cfg: DictConfig):
             }
         )
 
-        # model.eval()
+        model.yolo_model.model.eval()
+        model.classifier_model.eval()
         with torch.no_grad():
             TP = 0
             FP = 0

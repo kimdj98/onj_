@@ -12,7 +12,6 @@ class BasicBlock3D(nn.Module):
         self.bn1 = nn.BatchNorm3d(planes)
         self.conv2 = nn.Conv3d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm3d(planes)
-
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion * planes:
             self.shortcut = nn.Sequential(
@@ -35,10 +34,24 @@ class ResNet3D(nn.Module):
 
         self.conv1 = nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm3d(64)
+
+        self.feature_map1 = None
+        self.feature_map2 = None
+        self.feature_map3 = None
+        self.feature_map4 = None
+
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer1.register_forward_hook(self.hook_fn1)
+
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer2.register_forward_hook(self.hook_fn2)
+
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer3.register_forward_hook(self.hook_fn3)
+
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.layer4.register_forward_hook(self.hook_fn4)
+
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
@@ -49,6 +62,18 @@ class ResNet3D(nn.Module):
             layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
+
+    def hook_fn1(self, module, input, output):
+        self.feature_map1 = output
+
+    def hook_fn2(self, module, input, output):
+        self.feature_map2 = output
+
+    def hook_fn3(self, module, input, output):
+        self.feature_map3 = output
+
+    def hook_fn4(self, module, input, output):
+        self.feature_map4 = output
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
