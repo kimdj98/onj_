@@ -36,34 +36,16 @@ from model.fusor.concat import ConcatModel
 from model.backbone.utils import FeatureExpand
 
 # from losses.losses import CrossEntropyLoss # custom loss
-from torch.nn import CrossEntropyLoss  # standard loss
 from torch.nn import functional as F
 import torch.optim as optim
-from torcheval.metrics import BinaryAUROC
-from torcheval.metrics import BinaryAccuracy
 
+from utils.plotting import plot_auroc
+from utils.metrics import BinaryAccuracy, BinaryAUROC
+from utils.metrics import CrossEntropyLoss
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
 
 import wandb
-
-
-def plot_auroc(y_true, y_scores, epoch: int, title: str = "roc"):
-    fpr, tpr, _ = roc_curve(y_true, y_scores)
-    roc_auc = auc(fpr, tpr)
-    plt.figure()
-    lw = 2
-    plt.plot(fpr, tpr, color="darkorange", lw=lw, label=f"ROC curve (area = {roc_auc:.2f})")
-    plt.plot([0, 1], [0, 1], color="navy", lw=lw, linestyle="--")
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title(f"Receiver Operating Characteristic - Epoch {epoch}")
-    plt.legend(loc="lower right")
-    plt.savefig(f"{title}.png")
-    plt.close()
 
 
 @hydra.main(version_base="1.1", config_path="../config", config_name="config")
@@ -113,7 +95,6 @@ def train(cfg):
     train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(
         BASE_PATH, includes=[Modal.CBCT, Modal.MDCT, Modal.PA], random_state=cfg.data.random_state
     )
-    # train_data_dicts, val_data_dicts, test_data_dicts = get_data_dicts(BASE_PATH, includes=[Modal.CBCT])
 
     train_dataset = Dataset(data=train_data_dicts, transform=transforms)
     train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)
@@ -133,21 +114,18 @@ def train(cfg):
         model_3d = resnet50_3d()
 
     if cfg.train.pretrained_CT:
-        model.load_state_dict(torch.load(cfg.train.pretrained_CT))
-        print(f"Pretrained model {cfg.train.pretrained} loaded")
+        model_3d.load_state_dict(torch.load(cfg.train.pretrained_CT))
+        print(f"Pretrained model {cfg.train.pretrained_CT} loaded")
 
     if cfg.model.PA == "yolo":
-        yolo_model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
-
+        yolo_model = ultralytics.YOLO(cfg.train.pretrained_PA)
+        if cfg.train.pretrained_PA:
+            print(f"Pretrained model {cfg.train.pretrained_PA} loaded")
         classifier_model = ClassifierModel(num_classes=2)
         model_2d = YOLOClassifier(yolo_model, classifier_model)
 
-    if cfg.train.pretrained_PA:
-        model.load_state_dict(torch.load(cfg.train.pretrained_PA))
-        print(f"Pretrained model {cfg.train.pretrained} loaded")
-
     if cfg.model.fusion == "concat":
-        model = ConcatModel(model_2d, model_3d)
+        model = ConcatModel(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
 
     elif cfg.model.fusion == "attention":
         pass
@@ -169,8 +147,8 @@ def train(cfg):
     # switch model and dataset device to cuda
     device = torch.device(f"cuda:{cfg.train.gpu}" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-
     model = model.to(device)
+
     feature_expand_low = FeatureExpand(in_channels=cfg.model.low_channels, out_channels=cfg.model.low_expanded).to(
         device
     )
@@ -206,22 +184,31 @@ def train(cfg):
             B, _, _, _ = batch["PA_image"].shape
 
             optimizer.zero_grad()
-            output_3d = model_3d(batch["CT_image"])
-            output_2d = model_2d(batch["PA_image"])
+            output = model(batch)
+            # output_3d = model_3d(batch["CT_image"])
+            # output_2d = model_2d(batch["PA_image"])
 
-            # Match the feature vector size of 2D and 3D
-            # tried to expand 2D to avoid information loss when shrink 3D feature vector to match 2D
-            low_features = feature_expand_low(model_2d.low_features)
-            middle_features = feature_expand_middle(model_2d.middle_features)
-            high_features = feature_expand_high(model_2d.high_features)
+            # # Match the feature vector size of 2D and 3D
+            # # tried to expand 2D to avoid information loss when shrink 3D feature vector to match 2D
+            # # lf = feature_expand_low(model_2d.lf)
+            # # mf = feature_expand_middle(model_2d.mf)
+            # # hf = feature_expand_high(model_2d.hf)
 
-            low_features = low_features.view(B, cfg.model.low_expanded, -1)
-            middle_features = middle_features.view(B, cfg.model.mid_expanded, -1)
-            high_features = high_features.view(B, cfg.model.high_expanded, -1)
+            # # lf = lf.view(B, cfg.model.low_expanded, -1)
+            # # mf = mf.view(B, cfg.model.mid_expanded, -1)
+            # # hf = hf.view(B, cfg.model.high_expanded, -1)
 
-            feature_map2 = model_3d.feature_map2.view(B, cfg.model.low_expanded, -1)
-            feature_map3 = model_3d.feature_map3.view(B, cfg.model.mid_expanded, -1)
-            feature_map4 = model_3d.feature_map4.view(B, cfg.model.high_expanded, -1)
+            # # fm2 = model_3d.fm2.view(B, cfg.model.low_expanded, -1)
+            # # fm3 = model_3d.fm3.view(B, cfg.model.mid_expanded, -1)
+            # # fm4 = model_3d.fm4.view(B, cfg.model.high_expanded, -1)
+            # f = model_3d.f.view(B, cfg.model.high_expanded, -1)
+
+            # hf_flatten = model_2d.hf.view(B, -1)
+            # f_flatten = f.view(B, -1)
+
+            # if cfg.model.fusion == "concat":
+            #     # concatenate the high_features and feature_map4
+            #     f = torch.cat((hf_flatten, f_flatten), dim=2)
 
             loss_value = loss(output, batch["CT_label"])
             loss_value.backward()
@@ -269,8 +256,10 @@ def train(cfg):
 
                 batch["CT_image"] = batch["CT_image"].to(device)
                 batch["CT_label"] = batch["CT_label"].to(device)
+                batch["PA_image"] = batch["PA_image"].to(device)
+                batch["PA_label"] = batch["PA_label"].to(device)
 
-                output = model(batch["CT_image"])
+                output = model(batch)
                 loss_value = loss(output, batch["CT_label"])
                 running_loss += loss_value.item()
 

@@ -94,28 +94,28 @@ class YOLOClassifier(nn.Module):
         super(YOLOClassifier, self).__init__()
         self.yolo_model = yolo_model.model
         self.classifier_model = classifier_model
-        self.low_features = None
-        self.middle_features = None
-        self.high_features = None
+        self.lf = None  # low feature
+        self.mf = None  # middle feature
+        self.hf = None  # high feature
 
         self.yolo_model.model[15].register_forward_hook(self.hook_fn_low)
         self.yolo_model.model[18].register_forward_hook(self.hook_fn_middle)
         self.yolo_model.model[21].register_forward_hook(self.hook_fn_high)
 
     def hook_fn_low(self, module, input, output):
-        self.low_features = output
+        self.lf = output
 
     def hook_fn_middle(self, module, input, output):
-        self.middle_features = output
+        self.mf = output
 
     def hook_fn_high(self, module, input, output):
-        self.high_features = output
+        self.hf = output
 
     # Define feature extraction function
     def extract_features(self, img, layer_index=20):  # Choose the layer that fit your application
         self.yolo_model(img)
         # if self.low_features.__len__() == 1:
-        return self.low_features, self.middle_features, self.high_features
+        return self.lf, self.mf, self.hf
 
     def forward(self, x):
 

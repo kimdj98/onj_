@@ -35,10 +35,11 @@ class ResNet3D(nn.Module):
         self.conv1 = nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm3d(64)
 
-        self.feature_map1 = None
-        self.feature_map2 = None
-        self.feature_map3 = None
-        self.feature_map4 = None
+        self.fm1 = None  # fm: feature map
+        self.fm2 = None
+        self.fm3 = None
+        self.fm4 = None
+        self.f = None  # f: last feature
 
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer1.register_forward_hook(self.hook_fn1)
@@ -53,6 +54,7 @@ class ResNet3D(nn.Module):
         self.layer4.register_forward_hook(self.hook_fn4)
 
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        self.avgpool.register_forward_hook(self.hook_lf)
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
@@ -64,16 +66,19 @@ class ResNet3D(nn.Module):
         return nn.Sequential(*layers)
 
     def hook_fn1(self, module, input, output):
-        self.feature_map1 = output
+        self.fm1 = output
 
     def hook_fn2(self, module, input, output):
-        self.feature_map2 = output
+        self.fm2 = output
 
     def hook_fn3(self, module, input, output):
-        self.feature_map3 = output
+        self.fm3 = output
 
     def hook_fn4(self, module, input, output):
-        self.feature_map4 = output
+        self.fm4 = output
+
+    def hook_lf(self, module, input, output):
+        self.f = output
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
