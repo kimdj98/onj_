@@ -23,7 +23,7 @@ class ConcatModel(nn.Module):
 
 class ConcatModel2(nn.Module):
     def __init__(self, model_2d: nn.Module, model_3d: nn.Module, input_size: int = 512, num_classes: int = 2):
-        super(ConcatModel, self).__init__()
+        super(ConcatModel2, self).__init__()
         self.model_2d = model_2d
         self.model_3d = model_3d
 

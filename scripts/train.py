@@ -125,7 +125,7 @@ def train(cfg):
         model_2d = YOLOClassifier(yolo_model, classifier_model)
 
     if cfg.model.fusion == "concat":
-        model = ConcatModel2(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
+        model = ConcatModel(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
 
     elif cfg.model.fusion == "attention":
         pass
@@ -299,8 +299,8 @@ def train(cfg):
                 # save model
                 best_AUROC = auroc_val
                 strtime = time.strftime("%y%m%d_%H%M")
-                torch.save(model.state_dict(), f"{cfg.model.name}_best.pth")
-                print(f"Best model saved {cfg.model.name}_best.pth")
+                torch.save(model.state_dict(), f"{cfg.model.fusion}_{cfg.model.CT}_{cfg.model.PA}_best.pth")
+                print(f"Best model saved {cfg.model.fusion}_{cfg.model.CT}_{cfg.model.PA}_best.pth")
 
             if acc_val > best_ACC:
                 # plot auroc curve at best acc epoch
