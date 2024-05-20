@@ -19,7 +19,7 @@ train:
   weight_decay: 0.0001
 
   pretrained_CT: null
-  pretrained_PA: null
+  pretrained_PA: "/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt"
   pretrained_fusion: null
   scheduler_step_size: 1
 
