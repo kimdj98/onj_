@@ -32,7 +32,7 @@ from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet5
 from model.backbone.classifier.backbone_PA_2D import ClassifierModel, YOLOClassifier
 import ultralytics
 
-from model.fusor.concat import ConcatModel
+from model.fusor.concat import ConcatModel, ConcatModel2
 from model.backbone.utils import FeatureExpand
 
 # from losses.losses import CrossEntropyLoss # custom loss
@@ -125,7 +125,7 @@ def train(cfg):
         model_2d = YOLOClassifier(yolo_model, classifier_model)
 
     if cfg.model.fusion == "concat":
-        model = ConcatModel(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
+        model = ConcatModel2(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
 
     elif cfg.model.fusion == "attention":
         pass
