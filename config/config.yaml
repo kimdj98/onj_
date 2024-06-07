@@ -1,3 +1,5 @@
+mode: train # train, predict, cam
+
 train_PA:
   # gpu: 1 # device
   batch_size: 4
@@ -14,19 +16,28 @@ train:
   # gpu: 1 
   # description: "null"
   batch_size: 1
+  accumulation_step: 1 # should set to divisor of 16 (16의 약수로 설정할 것) (why? log_step=16)
   epoch: 50
-  lr: 0.00003
+  lr: 0.00001
   weight_decay: 0.0001
 
-  pretrained_CT: null
-  pretrained_PA: "/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt"
-  pretrained_fusion: null
+  # pretrained_CT: /mnt/aix22301/onj/checkpoints/CT_backbone/ResNet50/resnet50_best_less_overfitting.pth
+  pretrained_CT: /mnt/aix22301/onj/checkpoints/CT_backbone/ResNet50/resnet50_best.pth
+  # pretrained_CT: ""
+  pretrained_YOLO: /mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt # doesn't affect PA model 
+  pretrained_PA: /mnt/aix22301/onj/checkpoints/PA_backbone/YOLO/backbone_PA_best_model.pth
+  # pretrained_PA: ""
+  
+  # pretrained_fusion: /mnt/aix22301/onj/checkpoints/Fusion/Concat/concat_resnet50_yolo_best.pth
+  pretrained_fusion: ""
   scheduler_step_size: 1
 
 model:
   CT: resnet50 # resnet18, resnet50
   PA: yolo # no other options (240516)
   fusion: concat # concat, (TODO: attention, mamba)
+  freeze_2d: false # freeze PA backbone
+  freeze_3d: false # freeze CT backbone
 
   # expand PA feature vector size to match CT feature vector size
   low_channels: 64
@@ -40,7 +51,7 @@ model:
 
 
 data:
-  random_state: 21
+  random_state: 42
   data_version: v0 # dataset version
   CT_dim: [512, 512]
   PA_dim: [2048, 1024]
