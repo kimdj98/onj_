@@ -15,7 +15,7 @@ python data_prep.py
 - GPU number can be given as argument.
 - For training, use mode 1, and for testing, use mode 2
 - Define experiment number which will be used for saving model
-- Results of testing which shows ROC curves and sample iamges are saved in '{EXP_name}_test' folder
+- Results of testing which shows ROC curves and sample images are saved in '{EXP_name}_test' folder
 ```sh
 python train.py -g [gpu number] -m [mode] -exp [experiment name]
 ```
