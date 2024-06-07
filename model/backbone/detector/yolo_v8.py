@@ -65,14 +65,14 @@ def train(cfg: DictConfig):
         batch=-1,
         imgsz=list(imgsz),
         scale=0.0,
-        augment=False,
-        hsv_h=0,
-        hsv_s=0,
-        hsv_v=0,
-        translate=0.0,
-        fliplr=0.0,
-        crop_fraction=0.0,
-        mosaic=0.0,
+        # augment=False,
+        # hsv_h=0,
+        # hsv_s=0,
+        # hsv_v=0,
+        # translate=0.0,
+        # fliplr=0.0,
+        # crop_fraction=0.0,
+        # mosaic=0.0,
     )
 
     # CT prediction
