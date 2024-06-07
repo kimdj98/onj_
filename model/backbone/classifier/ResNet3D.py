@@ -40,6 +40,7 @@ class ResNet3D(nn.Module):
         self.fm3 = None
         self.fm4 = None
         self.f = None  # f: last feature
+        self.out = None  # out: output
 
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer1.register_forward_hook(self.hook_fn1)
@@ -54,8 +55,10 @@ class ResNet3D(nn.Module):
         self.layer4.register_forward_hook(self.hook_fn4)
 
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
-        self.avgpool.register_forward_hook(self.hook_lf)
+        self.avgpool.register_forward_hook(self.hook_fn5)
+
         self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc.register_forward_hook(self.hook_fn6)
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -77,8 +80,11 @@ class ResNet3D(nn.Module):
     def hook_fn4(self, module, input, output):
         self.fm4 = output
 
-    def hook_lf(self, module, input, output):
+    def hook_fn5(self, module, input, output):
         self.f = output
+
+    def hook_fn6(self, module, input, output):
+        self.out = output
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
