@@ -5,6 +5,9 @@ sys.path.append("/mnt/aix22301/onj/code")
 import time
 from pathlib import Path
 
+import cv2
+import logging
+import numpy as np
 import torch
 import hydra
 
@@ -26,13 +29,14 @@ from monai.transforms import (
     RandAffined,
     RandFlipd,
     RandGaussianNoised,
+    Transposed,
 )
 from model.backbone.classifier.ResNet3D import resnet18_3d, resnet34_3d, resnet50_3d, resnet101_3d
 
 from model.backbone.classifier.backbone_PA_2D import ClassifierModel, YOLOClassifier
 import ultralytics
 
-from model.fusor.concat import ConcatModel, ConcatModel2
+from model.fusor.concat import *  # import all concat models
 from model.backbone.utils import FeatureExpand
 
 # from losses.losses import CrossEntropyLoss # custom loss
@@ -42,6 +46,7 @@ import torch.optim as optim
 from utils.plotting import plot_auroc
 from utils.metrics import BinaryAccuracy, BinaryAUROC
 from utils.metrics import CrossEntropyLoss
+from utils.plotting import apply_grad_cam
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -69,20 +74,28 @@ def train(cfg):
             # ScaleIntensityRangePercentilesd(
             #     keys=["image"], lower=0, upper=100, b_min=0, b_max=1, clip=False, relative=False
             # ),
+            ScaleIntensityRanged(keys=["PA_image"], a_min=0, a_max=255, b_min=0.0, b_max=1.0, clip=False),
             Rotate90d(keys=["CT_image"], spatial_axes=(0, 1)),
             Flipd(keys=["CT_image"], spatial_axis=2),
             SelectSliced(keys=["CT_image", "CT_SOI"]),
             Resized(keys=["CT_image"], spatial_size=(CT_dim_x, CT_dim_y, 64), mode="trilinear"),
             Resized(keys=["PA_image"], spatial_size=(PA_dim_x, PA_dim_y), mode="bilinear"),
-            RandAffined(
-                mode="bilinear",
-                keys=["CT_image"],
-                prob=0.5,
-                spatial_size=(CT_dim_x, CT_dim_y, 64),
-                # rotate_range=(0.2, 0.2, 0.2),
-                # translate_range=(10, 10, 10),
-                # scale_range=(0.1, 0.1, 0.1),
-            ),
+            # RandAffined(
+            #     mode="bilinear",
+            #     keys=["CT_image"],
+            #     prob=0.5,
+            #     spatial_size=(CT_dim_x, CT_dim_y, 64),
+            #     # rotate_range=(0.2, 0.2, 0.2),
+            #     translate_range=(10, 10, 10),
+            #     # scale_range=(0.1, 0.1, 0.1),
+            # ),
+            # RandAffined(
+            #     mode="bilinear",
+            #     keys=["PA_image"],
+            #     prob=0.5,
+            #     spatial_size=(PA_dim_x, PA_dim_y),
+            #     translate_range=(10, 10),
+            # ),
             # RandFlipd(keys=["CT_image"], spatial_axis=0, prob=0.5),
             # RandGaussianNoised(keys=["CT_image"], std=0.01, prob=0.5),
             ToTensord(keys=["CT_image"]),
@@ -97,13 +110,13 @@ def train(cfg):
     )
 
     train_dataset = Dataset(data=train_data_dicts, transform=transforms)
-    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=cfg.train.batch_size, shuffle=True)
 
     val_dataset = Dataset(data=val_data_dicts, transform=transforms)
-    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg.train.batch_size, shuffle=True)
 
     test_dataset = Dataset(data=test_data_dicts, transform=transforms)
-    test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=cfg.train.batch_size, shuffle=True)
 
     # ======================================================================================
     # Initialize model, loss function, optimizer, metrics
@@ -113,19 +126,34 @@ def train(cfg):
     elif cfg.model.CT == "resnet50":
         model_3d = resnet50_3d()
 
+    elif cfg.model.CT == "unet":
+        pass
+
     if cfg.train.pretrained_CT:
         model_3d.load_state_dict(torch.load(cfg.train.pretrained_CT))
         print(f"Pretrained model {cfg.train.pretrained_CT} loaded")
 
     if cfg.model.PA == "yolo":
-        yolo_model = ultralytics.YOLO(cfg.train.pretrained_PA)
-        if cfg.train.pretrained_PA:
-            print(f"Pretrained model {cfg.train.pretrained_PA} loaded")
+        # if cfg.train.pretrained_PA:
+        #     yolo_model = ultralytics.YOLO(cfg.train.pretrained_PA)
+        #     print(f"Pretrained model {cfg.train.pretrained_PA} loaded")
+        yolo_model = ultralytics.YOLO(cfg.train.pretrained_YOLO)
         classifier_model = ClassifierModel(num_classes=2)
         model_2d = YOLOClassifier(yolo_model, classifier_model)
+        model_2d.load_state_dict(torch.load(cfg.train.pretrained_PA))
+        print(f"Pretrained model {cfg.train.pretrained_PA} loaded")
 
     if cfg.model.fusion == "concat":
-        model = ConcatModel(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel1(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel2(model_2d, model_3d, input_size=256 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel3(model_2d, model_3d, input_size=32 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel4(model_2d, model_3d, input_size=32 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel4_dropout(model_2d, model_3d, input_size=32 * 64 * 32 + 2048, num_classes=2)
+        model = ConcatModel5(model_2d, model_3d, input_size=4, num_classes=2)
+        # model = ConcatModel6(model_2d, model_3d, input_size=1 * 64 * 32 + 2048, num_classes=2)
+        # model = ConcatModel7(model_2d, model_3d, num_classes=2)
+        # model = ConcatModel7_dropout(model_2d, model_3d, input_size=512 + 512, num_classes=2)
+        # model = ConcatModel8(model_2d, model_3d, num_classes=2)
 
     elif cfg.model.fusion == "attention":
         pass
@@ -133,9 +161,15 @@ def train(cfg):
     elif cfg.model.fusion == "mamba":
         pass
 
+    if cfg.model.freeze_2d == True:
+        model.freeze_2d()
+
+    if cfg.model.freeze_3d == True:
+        model.freeze_3d()
+
     if cfg.train.pretrained_fusion:
         model.load_state_dict(torch.load(cfg.train.pretrained_fusion))
-        print(f"Pretrained model {cfg.train.pretrained} loaded")
+        print(f"Pretrained model {cfg.train.pretrained_fusion} loaded")
 
     loss = CrossEntropyLoss()
     auroc = BinaryAUROC()
@@ -171,9 +205,15 @@ def train(cfg):
         running_loss = 0.0
 
         train_iterator = tqdm(train_dataloader, desc=f"Epoch {epoch}")
+
         for i, batch in enumerate(train_iterator):
+            if cfg.mode != "train":  # block training when cfg.mode is not "train"
+                logging.warning("Training is skipped")
+                viz = apply_grad_cam(model, model.model_2d.classifier_model.conv4, input_tensor=batch)
+                break
+
             assert (
-                batch["CT_label"] == batch["PA_label"]
+                batch["CT_label"][0] == batch["PA_label"][0]
             )  # check if the labels are the same (if assertion fails, issue in data preprocessing!)
             # switch device
             batch["CT_image"] = batch["CT_image"].to(device)
@@ -183,7 +223,6 @@ def train(cfg):
 
             B, _, _, _ = batch["PA_image"].shape
 
-            optimizer.zero_grad()
             output = model(batch)
             # output_3d = model_3d(batch["CT_image"])
             # output_2d = model_2d(batch["PA_image"])
@@ -211,6 +250,7 @@ def train(cfg):
             #     f = torch.cat((hf_flatten, f_flatten), dim=2)
 
             loss_value = loss(output, batch["CT_label"])
+            loss_value = loss_value / cfg.train.accumulation_step
             loss_value.backward()
 
             p = output.detach()
@@ -219,15 +259,19 @@ def train(cfg):
             auroc.update(p[:, 1], batch["CT_label"])
             acc.update(p[:, 1], batch["CT_label"])
 
-            optimizer.step()
-
             running_loss += loss_value.item()
 
-            if ((i + 1) % 50) == 0:
+            if ((i + 1) % cfg.train.accumulation_step) == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+            if ((i + 1) % 16) == 0:
                 train_iterator.set_postfix(
-                    loss=f"{running_loss / 50:.4f}", auroc=f"{auroc.compute():.4f}", acc=f"{acc.compute():.4f}"
+                    loss=f"{running_loss * cfg.train.accumulation_step / 16:.4f}",
+                    auroc=f"{auroc.compute():.4f}",
+                    acc=f"{acc.compute():.4f}",
                 )
-                wandb.log({"train_loss": running_loss / 50})
+                wandb.log({"train_loss": running_loss * cfg.train.accumulation_step / 16})
                 running_loss = 0.0
 
         # update learning rate
@@ -272,19 +316,20 @@ def train(cfg):
                 true_labels.extend(batch["CT_label"].cpu().numpy())
                 predictions.extend(p[:, 1].cpu().numpy())
 
-                if i == len(val_iterator) - 1:
+                if ((i + 1) % 16) == 0:
                     val_iterator.set_postfix(
-                        loss=f"{running_loss / len(val_iterator):.4f}",
+                        loss=f"{running_loss/16:.4f}",
                         auroc=f"{auroc.compute():.4f}",
                         acc=f"{acc.compute():.4f}",
                     )
                     wandb.log(
                         {
-                            "val_loss": running_loss / len(val_iterator),
+                            "val_loss": running_loss / 16,
                             # "val_auroc": auroc.compute(),
                             # "val_acc": acc.compute(),
                         }
                     )
+                    running_loss = 0.0
 
             auroc_val = auroc.compute()
             acc_val = acc.compute()
