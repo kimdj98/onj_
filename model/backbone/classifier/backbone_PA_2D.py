@@ -45,17 +45,25 @@ class ClassifierModel(nn.Module):
         self.adaptive_pool = nn.AdaptiveAvgPool2d((64, 32))
 
         self.conv4 = nn.Conv2d(32 + 64 + 128, 32, kernel_size=1)
+        self.conv4.register_forward_hook(self.hook_fn)
 
         self.fc1 = nn.Linear(32 * 64 * 32, 512)
         # self.dropout1 = nn.Dropout(p=0.5)  # Dropout layer after fc1
         self.fc2 = nn.Linear(512, 512)
         # self.dropout2 = nn.Dropout(p=0.5)  # Dropout layer after fc2
         self.fc3 = nn.Linear(512, num_classes)
+        self.fc3.register_forward_hook(self.hook_fn2)
 
         # initialize fc layers with xavier uniform
         nn.init.xavier_uniform_(self.fc1.weight)
         nn.init.xavier_uniform_(self.fc2.weight)
         nn.init.xavier_uniform_(self.fc3.weight)
+
+    def hook_fn(self, module, input, output):
+        self.f = output
+
+    def hook_fn2(self, module, input, output):
+        self.out = output
 
     def forward(self, yolo_out_15, yolo_out_18, yolo_out_21):
         # Clone the tensors and ensure they require gradient computation
@@ -64,9 +72,9 @@ class ClassifierModel(nn.Module):
         yolo_out_21 = yolo_out_21.clone().detach().requires_grad_(True)
 
         # Reduce channel dimensions
-        yolo_out_15 = F.silu(self.conv1(yolo_out_15))
-        yolo_out_18 = F.silu(self.conv2(yolo_out_18))
-        yolo_out_21 = F.silu(self.conv3(yolo_out_21))
+        yolo_out_15 = F.relu(self.conv1(yolo_out_15))
+        yolo_out_18 = F.relu(self.conv2(yolo_out_18))
+        yolo_out_21 = F.relu(self.conv3(yolo_out_21))
 
         # Resize feature maps to a common size
         yolo_out_15 = self.adaptive_pool(yolo_out_15)
@@ -74,7 +82,7 @@ class ClassifierModel(nn.Module):
         yolo_out_21 = self.adaptive_pool(yolo_out_21)
 
         out = torch.cat((yolo_out_15, yolo_out_18, yolo_out_21), 1)
-        out = F.silu(self.conv4(out))
+        out = F.relu(self.conv4(out))
 
         concatenated_features = out.flatten(1)
 
@@ -212,8 +220,10 @@ def main(cfg: DictConfig):
 
     # train in 10 epochs with gpu
     model.to(device)
+    best_f1_score = 0.0
 
     for epoch in range(cfg.train_PA.epoch):
+        wandb.log({"lr": cfg.train_PA.lr})
         model.yolo_model.model.train()
         model.classifier_model.train()
 
@@ -290,15 +300,20 @@ def main(cfg: DictConfig):
                 print(
                     f"[VALID] Epoch {epoch+1}/{cfg.train_PA.epoch}, Validation Loss: {cumulated_loss/(len(validation_loader)*2):3f}, Accuracy: {(TP + TN) / (TP + TN + FP + FN):3f}, Precision: {TP / (TP + FP):3f}, Recall: {TP / (TP + FN):3f}, F1 Score: {2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)):3f}"
                 )
+                f1_score = 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN))
                 wandb.log(
                     {
                         "val_loss": cumulated_loss / (len(train_loader) * 2),
                         "val_accuracy": (TP + TN) / (TP + TN + FP + FN),
                         "val_precision": TP / (TP + FP),
                         "val_recall": TP / (TP + FN),
-                        "val_f1_score": 2 * (TP / (TP + FP)) * (TP / (TP + FN)) / (TP / (TP + FP) + TP / (TP + FN)),
+                        "val_f1_score": f1_score,
                     }
                 )
+                if best_f1_score < f1_score:
+                    best_f1_score = f1_score
+                    torch.save(model.state_dict(), f"backbone_PA_best_model.pth")
+                    print(f"Best model saved with F1 score: {best_f1_score}")
 
             except:
                 pass
