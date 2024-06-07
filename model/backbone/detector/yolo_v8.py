@@ -7,6 +7,7 @@ import cv2
 import json
 import numpy as np
 import os
+import wandb
 
 
 class Modal(Enum):
@@ -45,7 +46,8 @@ def predict(model: torch.nn.Module, image: str, label: str = None, output_dir: s
 @hydra.main(version_base="1.1", config_path="../../../config", config_name="config")
 def train(cfg: DictConfig):
     modal = Modal.PA
-    model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
+    # model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
+    model = ultralytics.YOLO("yolov8l.pt")
 
     if modal == Modal.CT:
         imgsz = cfg.data.CT_dim
@@ -55,7 +57,22 @@ def train(cfg: DictConfig):
     dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
     model.train(
-        data=dataset_yaml, lr0=1e-3, lrf=0.01, epochs=10, device="0", batch=-1, imgsz=list(imgsz), scale=0.0, mosaic=1.0
+        data=dataset_yaml,
+        lr0=1e-3,
+        lrf=1e-2,
+        epochs=2000,
+        device="0",
+        batch=-1,
+        imgsz=list(imgsz),
+        scale=0.0,
+        augment=False,
+        hsv_h=0,
+        hsv_s=0,
+        hsv_v=0,
+        translate=0.0,
+        fliplr=0.0,
+        crop_fraction=0.0,
+        mosaic=0.0,
     )
 
     # CT prediction
