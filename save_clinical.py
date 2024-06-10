@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-# 'ONJ_AI임상정보.xlsx' is the original excel file on google drive (nothing touched)
+# 'ONJ_AI임상정보.xlsx' is the original excel file from google drive
 # 'ONJ_AI_clinical_modified.xlsx' is the column-modified file of 'ONJ_AI임상정보.xlsx'
 # 'ONJ_patient_clinical.csv' is the 'ONJ_AI_clinical_modified.xlsx' converted to csv
 
