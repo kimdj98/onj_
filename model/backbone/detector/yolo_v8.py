@@ -47,7 +47,7 @@ def predict(model: torch.nn.Module, image: str, label: str = None, output_dir: s
 def train(cfg: DictConfig):
     modal = Modal.PA
     # model = ultralytics.YOLO("/mnt/aix22301/onj/outputs/2024-05-06/15-20-18/runs/detect/train/weights/last.pt")
-    model = ultralytics.YOLO("yolov8l.pt")
+    model = ultralytics.YOLO("yolov8n.pt")
 
     if modal == Modal.CT:
         imgsz = cfg.data.CT_dim
@@ -61,18 +61,18 @@ def train(cfg: DictConfig):
         lr0=1e-3,
         lrf=1e-2,
         epochs=2000,
-        device="0",
+        device="2",
         batch=-1,
         imgsz=list(imgsz),
         scale=0.0,
-        # augment=False,
-        # hsv_h=0,
-        # hsv_s=0,
-        # hsv_v=0,
-        # translate=0.0,
-        # fliplr=0.0,
-        # crop_fraction=0.0,
-        # mosaic=0.0,
+        augment=False,
+        hsv_h=0,
+        hsv_s=0,
+        hsv_v=0,
+        translate=0.0,
+        fliplr=0.0,
+        crop_fraction=0.0,
+        mosaic=0.0,
     )
 
     # CT prediction
