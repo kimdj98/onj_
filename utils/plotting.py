@@ -74,6 +74,26 @@ def apply_grad_cam_3d(model, target_layer, input_tensor, slice_idx):
     return visualization
 
 
+from medcam import medcam
+from medcam import medcam_inject
+import os
+
+
+def apply_med_cam(model, target_layer, input):
+    model.eval()
+    os.makedirs("./attention_maps", exist_ok=True)
+    model = medcam_inject.inject(
+        model,
+        output_dir="./attention_maps",
+        backend="gcam",
+        layer="auto",  # auto: Selects the last layer from which attention maps can be extracted.
+        # label=1,
+        save_maps=True,
+    )
+    input.permute(0, 1, 4, 2, 3)
+    output = model(input)
+
+
 # # Example of using the function
 # model.eval()  # Make sure the model is in evaluation mode
 # input_tensor = ...  # This should be your preprocessed input for which you want the CAM
