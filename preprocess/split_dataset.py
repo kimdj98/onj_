@@ -25,7 +25,7 @@ def split_dataset(cfg: DictConfig) -> None:
     print(f"Spliiting dataset in {data_dir}... with split ratio: {split} and test split: {test_split}")
 
     onjs = list(data_dir.glob("ONJ_labeling/*"))
-    non_onjs = list(data_dir.glob("Non_ONJ/*"))
+    non_onjs = list(data_dir.glob("Non_ONJ_soi/*"))
 
     X = onjs + non_onjs
 
