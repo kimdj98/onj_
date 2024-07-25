@@ -1,49 +1,30 @@
+import os
+import sys
+
+sys.path.append("/mnt/aix22301/onj/code/")
+
+import hydra
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 import ultralytics
 from ultralytics.nn.modules.head import Classify, Detect  # add classify to layer number 8
 from ultralytics.utils.loss import v8DetectionLoss, v8ClassificationLoss
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn.tasks import DetectionModel
 
-import hydra
 from omegaconf import DictConfig
-
-import sys
-
-sys.path.append("/mnt/aix22301/onj/code/")
+from einops import rearrange
 from model2.modules.utils import preprocess_data
+from attention import MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 
-# def get_ct_backbone():
-#     # Implement your custom ct_backbone here
-#     pass
-
-
-# def get_pa_backbone():
-#     pa_model = ultralytics.YOLO("yolov8n.pt")
-#     pa_model = pa_model.model
-#     return pa_model
-
-
-# def get_classifier():
-#     # Classifier with input channels 1 and 2 output classes
-#     return Classify(c1=3, c2=2)
-
-
-# if __name__ == "__main__":
-#     pa_backbone = get_pa_backbone()
-#     ct_backbone = get_ct_backbone()
-#     classifier = get_classifier()
-
-#     yolo_model = pa_backbone
-#     input_tensor = torch.randn(4, 3, 224, 224)
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
 version = "yolov8n"
-#     model = ultralytics.YOLO(f"{version}.pt")
 
-#     # Modify the dataset yaml to have 2 classes
 args = {
     "task": "detect",
     "data": dataset_yaml,
@@ -53,7 +34,7 @@ args = {
     "mode": "train",
 }
 
-
+import logging
 import hydra
 import torch
 from torch.utils.data.dataset import ConcatDataset
@@ -74,13 +55,24 @@ from ultralytics.utils import (
 )
 
 
-@hydra.main(version_base="1.1", config_path="../../config", config_name="config")
+@dataclass
+class Config:
+    n_embed: int = 256
+    n_head: int = 8
+    n_class: int = 2
+    n_patch3d: tuple = (8, 8, 4)
+    n_patch2d: tuple = (16, 16)
+    width_2d: int = 2048
+    width_3d: int = 512
+
+    lambda1: float = 0.5  # det loss weight
+    lambda2: float = 0.5  # cls loss weight
+    epochs: int = 10
+
+
+@hydra.main(version_base="1.3", config_path="../../config", config_name="config")
 def main(cfg):
     base_path = cfg.data.data_dir
-    # from ultralytics.data import build_dataloader, build_yolo_dataset
-    # from ultralytics.utils import check_dataset
-
-    # data = check_dataset("path/to/data.yaml")  # verify dataset integrity
 
     # Hook function to capture the output
     def hook_fn(module, input, output):
@@ -96,30 +88,25 @@ def main(cfg):
 
     custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
-    version = "yolov8n.pt"
-    # model = ultralytics.YOLO(f"{version}.pt")
-
-    # Modify the dataset yaml to have 2 classes
-    args = {
-        "task": "detect",
-        "data": custom_yaml,
-        "imgsz": 640,
-        "single_cls": False,
-        "model": f"{version}",
-        "mode": "train",
-        "stride": 1,
-    }
+    version = "yolov8x.pt"
 
     args = {
         "model": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
-        "imgsz": [2048, 1024],
+        "imgsz": [1024, 1024],
         "task": "detect",
         "data": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
         "mode": "train",
+        "model": f"{version}",
+        "device": "2",
+        "batch": 1,
+        "lr0": 1e-4,
+        "lrf": 1e-3,
     }
 
-    input_tensor = torch.randn(4, 3, 224, 224)
+    if torch.cuda.is_available():
+        torch.cuda.current_device()  # HACK: Eagerly Initialize CUDA to avoid lazy initialization issue in _smart_load("trainer")
 
+    input_tensor = torch.randn(4, 3, 224, 224)
     # # yolo_model = YOLO(model=dataset_yaml)
     yolo_model = YOLO(model=custom_yaml, task="detect", verbose=False)
     trainer = yolo_model._smart_load("trainer")(overrides=args, _callbacks=yolo_model.callbacks)
@@ -133,132 +120,116 @@ def main(cfg):
 
     optimizer = trainer.optimizer
 
+    # cls_loss_items = cls_loss.detach()
+    # return cls_loss, cls_loss_items
+
     pbar = enumerate(train_loader)
+
     nb = len(train_loader)
     nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
 
-    pbar = TQDM(enumerate(train_dataset), total=nb)
-    for i, data in pbar:
-        with torch.cuda.amp.autocast(trainer.amp):
-            data = trainer.preprocess_batch(data)
-            data = preprocess_data(base_path, data)  # adds CT data and unify the data device
-            data["img"] = data["img"].unsqueeze(0)
-            data["CT_image"] = data["CT_image"].unsqueeze(0)
+    # calculate the seq_len_x and seq_len_y
+    # select one data in pbar to configure the data size and types.
+    data = next(pbar)[1]
+    data = preprocess_data(base_path, data)
+    B, _, H, W, D = data["CT_image"].shape
+    seq_len_x = (H // Config.n_patch3d[0]) * (W // Config.n_patch3d[1]) * (D // Config.n_patch3d[2])
+    B, _, H, W = data["img"].shape
+    seq_len_y = (H // Config.n_patch2d[0]) * (W // Config.n_patch2d[1])
 
-            trainer.loss, trainer.loss_items = trainer.model.loss(data)
-            trainer.tloss = (
-                (trainer.tloss * i + trainer.loss_items) / (i + 1) if trainer.tloss is not None else trainer.loss_items
-            )
+    pe_x = nn.Parameter(torch.randn(1, seq_len_x, Config.n_embed, device=trainer.device) * 1e-3)
+    pe_y = nn.Parameter(torch.randn(1, seq_len_y, Config.n_embed, device=trainer.device) * 1e-3)
+    proj = nn.Linear(Config.n_embed, Config.n_embed).to(trainer.device)
+    proj = torch.compile(proj)
 
-            # Backward
-            trainer.scaler.scale(trainer.loss).backward()
+    fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=256).to(
+        trainer.device
+    )  # x -> y (3D -> 2D)
+    fusor = torch.compile(fusor)
 
-            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-            trainer.optimizer_step()  # includes zero_grad()
+    feature_expand = nn.Linear(256, Config.width_2d).to(trainer.device)
+    feature_expand = torch.compile(feature_expand)
 
-    trainer.train(data=dataset_yaml)
-    # yolo_model.train()
+    raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
+    raw_model = torch.compile(raw_model)
 
-    yolo_model = YOLO("yolov8n.pt")
-    yolo_model.train(data=dataset_yaml)
-    yolo_model.train_loader = yolo_model.get_dataloader()
+    classifier = Classify(c1=640, c2=2).to(trainer.device)  # ultralytics.nn.modules.head.Classify
+    classifier = torch.compile(classifier)
 
-    # overrides = yaml_load(checks.check_yaml(args)) if args else overrides
-    yolo_model
-    model = yolo_model.model
+    # add parameters to the optimizer
+    trainer.optimizer.add_param_group({"params": classifier.parameters()})
+    trainer.optimizer.add_param_group(
+        {"params": [param for module in [fusor, feature_expand, proj] for param in module.parameters()]}
+    )
+    trainer.optimizer.add_param_group({"params": [pe_x, pe_y]})
 
-    model2 = YOLO(model="yolov8n.pt").model
+    # trainer.optimizer.add_param_group({"params": [feature_expand.parameters()]})
 
-    model(input_tensor)
-    model2(input_tensor)
+    patch_embed3d = PatchEmbed3D(patch_size=Config.n_patch3d).to(trainer.device)  # no parameters
+    patch_embed2d = PatchEmbed2D(patch_size=Config.n_patch2d).to(trainer.device)
 
-    trainer = DetectionTrainer(overrides=args)
-    # dataloader = trainer.get_dataloader(dataset_yaml, batch_size=16, rank=0, mode="train")
-    # trainer.get_model()
-    # Create an instance of the YOLO model
-    # model_path = "yolov8n.pt"
-    # yolo_model = YOLO(model_path)
-    yolo_model = yolo_model.model
-    yolo_model = DetectionModel(cfg=None, nc=2, verbose=True)
-    yolo_model.args = args
-    detection_loss_fn = v8DetectionLoss(yolo_model)
+    register_hook(trainer.model, 8)
 
-    # yolo_model = yolo_model.model
+    # Set log_file
+    log_dir = "log2"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"log.txt")
+    with open(log_file, "w") as f:
+        pass
 
-    # Register the hook to capture the 8th layer feature map
-    register_hook(yolo_model, 8)
+    for epoch in range(Config.epochs):
+        pbar = TQDM(enumerate(train_loader), total=nb)
+        # change model to train mode
+        raw_model.train()
+        classifier.train()
+        fusor.train()
 
-    # Example input tensor
-    input_tensor = torch.randn(4, 3, 224, 224)
+        for i, data in pbar:
+            with torch.cuda.amp.autocast(trainer.amp):
+                data = trainer.preprocess_batch(data)
+                data = preprocess_data(base_path, data)  # adds CT data and unify the data device
+                if data is None:  # case when only PA exist
+                    continue
 
-    # Perform a forward pass through the model
-    _ = yolo_model(input_tensor)
+                patches_3d = patch_embed3d(data["CT_image"])  # B E H W D (Batch, Embedding, Height, Width, Depth)
+                patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")  # B (HWD) E
+                patches_3d = proj(patches_3d)  # embedding
+                patches_3d += pe_x
 
-    # Now the feature_map variable contains the output of the 8th layer
-    print("Feature map shape at layer 8:", feature_map.shape)
+                patches_2d = patch_embed2d(data["img"][:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
+                patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
+                patches_2d = proj(patches_2d)  # embedding
+                patches_2d += pe_y
+
+                attn_out = fusor(patches_3d, patches_2d)
+                attn_out = feature_expand(attn_out)
+                data["img"] = attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
+
+                # fusor
+                trainer.loss, _ = raw_model.loss(data)
+
+                # Forward pass
+                preds = classifier(feature_map)
+                cls_loss = F.cross_entropy(
+                    preds,
+                    F.one_hot(data["onj_cls"].to(torch.int64), num_classes=2).view(1, -1).float(),
+                    reduction="mean",
+                )
+
+                # Backward pass
+                trainer.loss = Config.lambda1 * trainer.loss + Config.lambda2 * cls_loss
+                trainer.scaler.scale(trainer.loss).backward()
+
+                # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+                trainer.optimizer_step()  # includes zero_grad()
+
+                # Log the loss
+                log_message = f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {trainer.loss.item():.4f}"
+                pbar.set_description(log_message)
+
+                with open(log_file, "a") as f:
+                    f.write(f"{(epoch*nb)+i+1} train {trainer.loss.item():.4f}\n")
 
 
 if __name__ == "__main__":
     main()
-
-
-#     # trainer = model._smart_load("trainer")(args, model.callbacks)
-
-#     # Example of how to train the model with the provided dataset
-#     # model.train(data=dataset_yaml)
-
-#     # Perform a forward pass through the detection model and classifier
-#     detector_output = yolo_model(input_tensor)
-#     classifier_output = classifier(input_tensor)
-
-#     print("Detector Output shape:", detector_output[0].shape)
-#     print("Classifier Output shape:", classifier_output.shape)
-
-
-# import torch
-# import torch.nn as nn
-# from ultralytics import YOLO
-
-
-# class YOLOWithFeatureExtraction(YOLO):
-#     def __init__(self, model_path):
-#         super(YOLOWithFeatureExtraction, self).__init__(model_path)
-#         self.model = self.model.model  # Accessing the internal model from YOLO
-
-#     def forward(self, x):
-#         features = None
-#         for i, layer in enumerate(self.model):
-#             x = layer(x)
-#             if i == 8:
-#                 features = x  # Capture the feature map at layer 8
-#         return features, x  # Return the feature map and final output
-
-
-# # # Create an instance of the modified model
-# # model_path = "yolov8n.pt"
-# # yolo_model = YOLOWithFeatureExtraction(model_path)
-
-# # # Example input tensor
-# # input_tensor = torch.randn(4, 3, 224, 224)
-
-# # # Forward pass through the model to get the feature map and final output
-# # features, final_output = yolo_model(input_tensor)
-
-# # print("Feature map shape at layer 8:", features.shape)
-# # print("Final output shape:", final_output.shape)
-
-
-# if __name__ == "__main__":
-#     model_path = "yolov8n.pt"
-
-#     # Create the model instance
-#     yolo_model = YOLOWithFeatureExtraction(model_path)
-
-#     # Example input tensor
-#     input_tensor = torch.randn(4, 3, 224, 224)
-
-#     # Perform a forward pass to get the feature map at layer 8 and the final output
-#     features, final_output = yolo_model(input_tensor)
-
-#     print("Feature map shape at layer 8:", features.shape)
-#     print("Final output shape:", final_output.shape)
