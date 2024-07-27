@@ -117,17 +117,23 @@ def process(image_path, output_image_path, output_label_path, bbox_label_path):
     else:
         with open(bbox_label_path, "r") as f:
             annotations = json.load(f)
-            bboxes = annotations["bbox"]
-            for bbox in bboxes:
-                x, y, w, h = bbox["coordinates"]
-                x1 = int((x - w / 2) * image.shape[1])
-                x2 = int((x + w / 2) * image.shape[1])
-                min_x = min(x1, min_x)
-                max_x = max(x2, max_x)
-                y1 = int((y - h / 2) * image.shape[0])
-                y2 = int((y + h / 2) * image.shape[0])
-                min_y = min(y1, min_y)
-                max_y = max(y2, max_y)
+            try:
+                bboxes = annotations["bbox"]
+                for bbox in bboxes:
+                    x, y, w, h = bbox["coordinates"]
+                    x1 = int((x - w / 2) * image.shape[1])
+                    x2 = int((x + w / 2) * image.shape[1])
+                    min_x = min(x1, min_x)
+                    max_x = max(x2, max_x)
+                    y1 = int((y - h / 2) * image.shape[0])
+                    y2 = int((y + h / 2) * image.shape[0])
+                    min_y = min(y1, min_y)
+                    max_y = max(y2, max_y)
+            except:  # if there is no bbox (for non-onj data)
+                min_x = 0
+                max_x = 1 * image.shape[1]
+                min_y = 0
+                max_y = 1 * image.shape[0]
 
         constraints = {"x_min": min_x, "x_max": max_x, "y_min": min_y, "y_max": max_y}
 
@@ -144,14 +150,18 @@ def process(image_path, output_image_path, output_label_path, bbox_label_path):
     )
 
     if bbox_label_path:
-        for bbox in bboxes:
-            x, y, w, h = bbox["coordinates"]
-            bbox["coordinates"] = [
-                (x * annotations["width"] - (min_index_left_pre + min_index_left)) / final_cropped_image.shape[1],
-                (y * annotations["height"] - min_index_upper) / final_cropped_image.shape[0],
-                w * annotations["width"] / final_cropped_image.shape[1],
-                h * annotations["height"] / final_cropped_image.shape[0],
-            ]
+        try:
+            for bbox in bboxes:
+                x, y, w, h = bbox["coordinates"]
+                bbox["coordinates"] = [
+                    (x * annotations["width"] - (min_index_left_pre + min_index_left)) / final_cropped_image.shape[1],
+                    (y * annotations["height"] - min_index_upper) / final_cropped_image.shape[0],
+                    w * annotations["width"] / final_cropped_image.shape[1],
+                    h * annotations["height"] / final_cropped_image.shape[0],
+                ]
+
+        except:
+            pass
 
         with open(output_label_path, "w") as f:
             json.dump(annotations, f, indent=4)
@@ -160,8 +170,8 @@ def process(image_path, output_image_path, output_label_path, bbox_label_path):
 
 
 def main():
-    source_base = "/mnt/aix22301/onj/dataset/v0/YOLO_PA"
-    dest_base = "/mnt/aix22301/onj/dataset/v0/YOLO_PA_cropped3"
+    source_base = "/mnt/aix22301/onj/dataset/v0/YOLO_PA2"
+    dest_base = "/mnt/aix22301/onj/dataset/v0/YOLO_PA2_cropped"
 
     create_folder_structure(dest_base)
 
