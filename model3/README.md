@@ -1,3 +1,0 @@
-This model performs two tasks as a multitask training. The two tasks are bbox prediction of panorama image, and onj classification.
-Due to the lack of information with panorama we performed cross attention to utilize information from 3D CT image. panorama image is used as query and CT is used as key and value. This fused information is used in BBox prediction. 
-Clinical information is also used to help classify onj not bbox predcition.

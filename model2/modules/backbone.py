@@ -67,10 +67,11 @@ class Config:
     n_patch2d: tuple = (64, 64)
     width_2d: int = 2048
     width_3d: int = 512
+    gpu: int = 7
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 4e-3
+    lr: float = 1e-4
     batch: int = 16
 
 
@@ -111,7 +112,7 @@ def main(cfg):
         "data": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
         "mode": "train",
         "model": f"{version}",
-        "device": "7",
+        "device": f"{Config.gpu}",
         "batch": 1,
         "lr0": 4e-2,
         "lrf": 3e-4,

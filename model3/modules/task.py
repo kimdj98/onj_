@@ -1,2 +1,0 @@
-# bbox_prediction
-# classification
