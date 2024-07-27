@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
 import ultralytics
@@ -19,7 +21,7 @@ from ultralytics.nn.tasks import DetectionModel
 from omegaconf import DictConfig
 from einops import rearrange
 from model2.modules.utils import preprocess_data
-from attention import MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from attention import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
@@ -35,6 +37,7 @@ args = {
 }
 
 import logging
+import time
 import hydra
 import torch
 from torch.utils.data.dataset import ConcatDataset
@@ -57,17 +60,28 @@ from ultralytics.utils import (
 
 @dataclass
 class Config:
-    n_embed: int = 256
+    n_embed: int = 2048
     n_head: int = 8
     n_class: int = 2
     n_patch3d: tuple = (8, 8, 4)
-    n_patch2d: tuple = (16, 16)
+    n_patch2d: tuple = (64, 64)
     width_2d: int = 2048
     width_3d: int = 512
+    lambda1: float = 0.0  # det loss weight
+    lambda2: float = 1.0  # cls loss weight
+    epochs: int = 100
+    lr: float = 4e-3
+    batch: int = 16
 
-    lambda1: float = 0.5  # det loss weight
-    lambda2: float = 0.5  # cls loss weight
-    epochs: int = 10
+
+class CTBackbone(nn.Module):
+    def __init__(self):
+        super(CTBackbone, self).__init__()
+
+
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
 
 
 @hydra.main(version_base="1.3", config_path="../../config", config_name="config")
@@ -97,10 +111,10 @@ def main(cfg):
         "data": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
         "mode": "train",
         "model": f"{version}",
-        "device": "2",
+        "device": "7",
         "batch": 1,
-        "lr0": 1e-4,
-        "lrf": 1e-3,
+        "lr0": 4e-2,
+        "lrf": 3e-4,
     }
 
     if torch.cuda.is_available():
@@ -142,13 +156,17 @@ def main(cfg):
     proj = nn.Linear(Config.n_embed, Config.n_embed).to(trainer.device)
     proj = torch.compile(proj)
 
-    fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=256).to(
+    # self attention module
+    mixer = MultiHeadSelfAttention(seq_len_x=seq_len_x, dim=Config.n_embed).to(trainer.device)  # 3D
+    mixer = torch.compile(mixer)
+
+    fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=Config.n_embed).to(
         trainer.device
     )  # x -> y (3D -> 2D)
     fusor = torch.compile(fusor)
 
-    feature_expand = nn.Linear(256, Config.width_2d).to(trainer.device)
-    feature_expand = torch.compile(feature_expand)
+    # feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
+    # feature_expand = torch.compile(feature_expand)
 
     raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
     raw_model = torch.compile(raw_model)
@@ -156,22 +174,37 @@ def main(cfg):
     classifier = Classify(c1=640, c2=2).to(trainer.device)  # ultralytics.nn.modules.head.Classify
     classifier = torch.compile(classifier)
 
-    # add parameters to the optimizer
-    trainer.optimizer.add_param_group({"params": classifier.parameters()})
-    trainer.optimizer.add_param_group(
-        {"params": [param for module in [fusor, feature_expand, proj] for param in module.parameters()]}
+    # # add parameters to the optimizer
+    # trainer.optimizer.add_param_group({"params": classifier.parameters()})
+    # trainer.optimizer.add_param_group(
+    #     {"params": [param for module in [fusor, feature_expand, proj] for param in module.parameters()]}
+    # )
+    # trainer.optimizer.add_param_group({"params": [pe_x, pe_y]})
+
+    # use adamw optimizer with cosine annealing
+    # add classifier, raw_model, fusor, feature_expand, proj parameters
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": raw_model.parameters()},
+            {"params": classifier.parameters()},
+            {"params": [param for module in [mixer, fusor, proj] for param in module.parameters()]},
+            {"params": [pe_x, pe_y]},
+        ],
+        lr=Config.lr,
     )
-    trainer.optimizer.add_param_group({"params": [pe_x, pe_y]})
 
-    # trainer.optimizer.add_param_group({"params": [feature_expand.parameters()]})
+    models = [raw_model, classifier, mixer, fusor, proj]
+    parameters = [pe_x, pe_y]
 
-    patch_embed3d = PatchEmbed3D(patch_size=Config.n_patch3d).to(trainer.device)  # no parameters
-    patch_embed2d = PatchEmbed2D(patch_size=Config.n_patch2d).to(trainer.device)
+    # cosine annealing
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=nb * Config.epochs, eta_min=3e-4)
+    patch_embed3d = PatchEmbed3D(patch_size=Config.n_patch3d, embed_dim=Config.n_embed).to(trainer.device)
+    patch_embed2d = PatchEmbed2D(patch_size=Config.n_patch2d, embed_dim=Config.n_embed).to(trainer.device)
 
     register_hook(trainer.model, 8)
 
     # Set log_file
-    log_dir = "log2"
+    log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_lambda1_{Config.lambda1}_lambda2_{Config.lambda2}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"log.txt")
     with open(log_file, "w") as f:
@@ -202,7 +235,6 @@ def main(cfg):
                 patches_2d += pe_y
 
                 attn_out = fusor(patches_3d, patches_2d)
-                attn_out = feature_expand(attn_out)
                 data["img"] = attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
 
                 # fusor
@@ -218,17 +250,31 @@ def main(cfg):
 
                 # Backward pass
                 trainer.loss = Config.lambda1 * trainer.loss + Config.lambda2 * cls_loss
-                trainer.scaler.scale(trainer.loss).backward()
+                trainer.loss.backward()
+
+                # Gradient clipping
+                for model in models:
+                    clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                for parameter in parameters:
+                    clip_grad_norm_(parameter, max_norm=1.0)
 
                 # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-                trainer.optimizer_step()  # includes zero_grad()
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
 
-                # Log the loss
-                log_message = f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {trainer.loss.item():.4f}"
-                pbar.set_description(log_message)
+                with torch.no_grad():
+                    preds = F.softmax(preds, dim=1)
+                    pred = preds.argmax(dim=1).int().item()
+                    mark = (pred == data["onj_cls"]).int().item()
+                    log_message = f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {trainer.loss.item():.4f}, Mark: {mark}, Pred: {pred}"
+                    pbar.set_description(log_message)
 
-                with open(log_file, "a") as f:
-                    f.write(f"{(epoch*nb)+i+1} train {trainer.loss.item():.4f}\n")
+                    with open(log_file, "a") as f:
+                        f.write(
+                            f"{(epoch*nb)+i+1} train {trainer.loss.item():.4f} mark {mark} pred {pred} lr {scheduler.get_last_lr()}\n"
+                        )
 
 
 if __name__ == "__main__":

@@ -18,7 +18,12 @@ class MultiHeadCrossAttention(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+
         self.proj = nn.Linear(dim, dim)
 
         self.norm = nn.LayerNorm(dim)
@@ -36,19 +41,18 @@ class MultiHeadCrossAttention(nn.Module):
 
         x = self.norm(x)  # (B, N, E)
         y = self.norm(y)  # (B, M, E)
-        # x = self.proj(x)
-        # x = x + self.pe_x
 
-        # y = self.proj(y)
-        # y = y + self.pe_y
+        # qkv = self.qkv(x).chunk(3, dim=-1)
+        # _, k_x, v_x = [
+        #     w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv
+        # ]  # (B, num_heads, M, head_dim)
 
-        qkv = self.qkv(x).chunk(3, dim=-1)
-        _, k_x, v_x = [
-            w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv
-        ]  # (B, num_heads, M, head_dim)
+        k_x = self.k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        v_x = self.v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        q_y = self.q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
 
-        qkv = self.qkv(y).chunk(3, dim=-1)
-        q_y, _, _ = [w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv]
+        # qkv = self.qkv(y).chunk(3, dim=-1)
+        # q_y, _, _ = [w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv]
 
         attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
@@ -56,6 +60,55 @@ class MultiHeadCrossAttention(nn.Module):
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
 
         out += y  # residual connection
+
+        return out
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, seq_len_x, dim, num_heads=8, qkv_bias=False, qk_scale=None):
+        super(MultiHeadSelfAttention, self).__init__()
+
+        self.num_heads = num_heads
+
+        self.seq_len_x = seq_len_x
+
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+
+        self.proj = nn.Linear(dim, dim)
+
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, N, E)
+            y: (B, M, E)
+            x: key, value y: query
+            x -> y
+        """
+        B, N, E = x.shape
+        _, M, _ = x.shape
+
+        x = self.norm(x)  # (B, N, E)
+
+        k_x = self.k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        v_x = self.v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        q_x = self.q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+
+        attn_scores = (q_x @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+        attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
+        out = attn @ v_x  # (B, num_heads, M, head_dim)
+        out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
+
+        out += x  # residual connection
 
         return out
 

@@ -101,8 +101,13 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
     else:  # if patient not in both labels
         raise ValueError(f"Patient {patient} is not in both labels")
 
-    annotations = patient_path / "label.json"
-    annotations = json.load(open(annotations, "r"))
+    try:  # if the patient has no label.json, then return None
+        annotations = patient_path / "label.json"
+        annotations = json.load(open(annotations, "r"))
+
+    except:
+        annotations = ct_date_dir / f"{data['CT_modal']}_axial" / "label.json"
+        annotations = json.load(open(annotations, "r"))
 
     if "SOI" in annotations.keys():
         data["CT_SOI"] = annotations["SOI"]
