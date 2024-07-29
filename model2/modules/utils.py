@@ -142,6 +142,6 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
     data["cls"] = data["cls"].to(device, non_blocking=True).float()
 
     # Move 'onj_cls' integer to the same device
-    data["onj_cls"] = torch.tensor(data["onj_cls"], device=device, dtype=torch.float32)
+    data["onj_cls"] = torch.tensor(data["onj_cls"], device=device, dtype=torch.int64)
 
     return data
