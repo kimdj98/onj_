@@ -74,7 +74,8 @@ class Config:
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
     lr: float = 0.04
-    batch: int = 16
+    batch: int = 1
+    grad_accum_steps: int = 12 // batch
 
 
 class CTBackbone(nn.Module):
@@ -203,9 +204,11 @@ def main(cfg):
     nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
 
     raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
+    # raw_model = torch.compile(raw_model)
     register_hook(raw_model, 8)
 
     model = FusionModel(cfg, Config, next(iter(train_loader)), trainer, ct_backbone=None, yolo=raw_model)
+    model = torch.compile(model)
     # use AdamW optimizer with cosine annealing
     # add classifier, raw_model, fusor, feature_expand, proj parameters
     optimizer = torch.optim.AdamW(
@@ -223,59 +226,81 @@ def main(cfg):
     with open(log_file, "w") as f:
         pass
 
+    max_full_batch = (
+        len(train_loader) // Config.grad_accum_steps
+    )  # calculate how many times one epoch should repeat the batch
+    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
+
     for epoch in range(Config.epochs):
-        pbar = TQDM(enumerate(train_loader), total=nb)
+        pbar = iter(enumerate(train_loader))
         # change model to train mode
         model.train()
         model.to(trainer.device)
 
-        for i, data in pbar:
-            with torch.cuda.amp.autocast(trainer.amp):
-                data = trainer.preprocess_batch(data)
-                data = preprocess_data(base_path, data)  # adds CT data and unify the data device
-                if data is None:  # case when only PA exist
-                    continue
+        for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
+            loss_accum = 0.0
+            for micro_steps in range(Config.grad_accum_steps):
+                try:
+                    i, data = next(pbar)
+                except:
+                    break  # should break to next epoch since j is already at the last batch
 
-                # Forward pass
-                model(data)
+                with torch.cuda.amp.autocast(trainer.amp):
 
-                det_loss, _ = raw_model.loss(data)
-                preds = model.classifier(feature_map)
+                    data = trainer.preprocess_batch(data)
+                    data = preprocess_data(base_path, data)  # adds CT data and unify the data device
+                    if data is None:  # case when only PA exist
+                        continue
 
-                data["onj_cls"] = torch.tensor(
-                    data["onj_cls"], dtype=torch.int64, device=trainer.device
-                )  # HACK: to avoid error
-                cls_loss = F.cross_entropy(
-                    preds,
-                    F.one_hot(data["onj_cls"], num_classes=2).view(1, -1).float(),
-                    reduction="mean",
-                )
+                    # Forward pass
+                    model(data)
 
-                # Backward pass
-                loss = Config.lambda1 * det_loss + Config.lambda2 * cls_loss
-                loss.backward()
+                    det_loss, _ = raw_model.loss(data)
+                    preds = model.classifier(feature_map)
 
-                clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    data["onj_cls"] = torch.tensor(
+                        data["onj_cls"], dtype=torch.int64, device=trainer.device
+                    )  # HACK: to avoid error
 
-                # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-                optimizer.step()
-                optimizer.zero_grad()
-                scheduler.step()
-
-                with torch.no_grad():
-                    # evaluations
-                    preds = F.softmax(preds, dim=1)
-                    pred = preds.argmax(dim=1).int().item()
-                    mark = (pred == data["onj_cls"]).int().item()
-                    log_message = (
-                        f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss.item():.4f}, Mark: {mark}, Pred: {pred}"
+                    cls_loss = F.cross_entropy(
+                        preds,
+                        F.one_hot(data["onj_cls"], num_classes=2).view(1, -1).float(),
+                        reduction="mean",
                     )
-                    pbar.set_description(log_message)
 
-                    with open(log_file, "a") as f:
-                        f.write(
-                            f"{(epoch*nb)+i+1} train {loss.item():.4f} mark {mark} pred {pred} lr {scheduler.get_last_lr()}\n"
-                        )
+                    # Backward pass
+                    if i >= (len(train_loader) - last_accum_step):
+                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / last_accum_step
+                    else:
+                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / Config.grad_accum_steps
+
+                    loss_accum += loss.detach()
+                    loss.backward()
+
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
+
+            with torch.no_grad():
+                # preds = F.softmax(preds, dim=1)
+                # pred = preds.argmax(dim=1).int().item()
+                # mark = (pred == data["onj_cls"]).int().item()
+                # log_message = (
+                #     f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}, Mark: {mark}, Pred: {pred}"
+                # )
+                log_message = f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}"
+                print(log_message)
+
+                # with open(log_file, "a") as f:
+                #     f.write(
+                #         f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} mark {mark} pred {pred} lr {scheduler.get_last_lr()}\n"
+                #     )
+
+                with open(log_file, "a") as f:
+                    f.write(f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} lr {scheduler.get_last_lr()[0]}\n")
 
     model.eval()
 
