@@ -60,14 +60,14 @@ from ultralytics.utils import (
 
 @dataclass
 class Config:
-    n_embed: int = 2048
+    n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
     n_pre_layer: int = 3
     n_post_layer: int = 3
-    n_patch3d: tuple = (8, 8, 4)
+    n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
-    width_2d: int = 2048
+    width_2d: int = 1024
     width_3d: int = 512
     gpu: int = 7
     lambda1: float = 0.0  # det loss weight
@@ -117,12 +117,18 @@ class FusionModel(nn.Module):
 
         self.proj = nn.Linear(model_config.n_embed, model_config.n_embed)
 
-        self.encoder3d = nn.ModuleList(
-            [MultiHeadSelfAttention(seq_len_x=seq_len_x, dim=model_config.n_embed)] * model_config.n_pre_layer
+        self.encoder3d = nn.Sequential(
+            *[
+                MultiHeadSelfAttention(seq_len_x=seq_len_x, dim=model_config.n_embed)
+                for _ in range(model_config.n_pre_layer)
+            ]
         )
         self.fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed)
-        self.post = nn.ModuleList(
-            [MultiHeadSelfAttention(model_config.n_embed, model_config.n_embed)] * model_config.n_post_layer
+        self.post = nn.Sequential(
+            *[
+                MultiHeadSelfAttention(seq_len_x=seq_len_y, dim=model_config.n_embed)
+                for _ in range(model_config.n_post_layer)
+            ]
         )
 
         self.feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
@@ -204,11 +210,9 @@ def main(cfg):
     nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
 
     raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
-    # raw_model = torch.compile(raw_model)
     register_hook(raw_model, 8)
 
     model = FusionModel(cfg, Config, next(iter(train_loader)), trainer, ct_backbone=None, yolo=raw_model)
-    model = torch.compile(model)
     # use AdamW optimizer with cosine annealing
     # add classifier, raw_model, fusor, feature_expand, proj parameters
     optimizer = torch.optim.AdamW(
