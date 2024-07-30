@@ -117,7 +117,7 @@ class FusionModel(nn.Module):
 
         self.proj = nn.Linear(model_config.n_embed, model_config.n_embed)
 
-        self.pre = nn.ModuleList(
+        self.encoder3d = nn.ModuleList(
             [MultiHeadSelfAttention(seq_len_x=seq_len_x, dim=model_config.n_embed)] * model_config.n_pre_layer
         )
         self.fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed)
@@ -129,11 +129,9 @@ class FusionModel(nn.Module):
 
         self.ct_backbone = ct_backbone  # for feature-level fusion
         self.yolo = yolo
-        # self.trainer = trainer
         self.classifier = Classify(c1=640, c2=2).to(trainer.device)  # NOTE: c1 depends on the detection model type
 
     def forward(self, x: dict):
-        # x = self.trainer.preprocess_batch(x)  # TODO: erase this code later
         x = preprocess_data(self.base_path, x)
 
         patches_3d = self.patch_embed3d(x["CT_image"])  # B E H W D (Batch, Embedding, Height, Width, Depth)
@@ -141,12 +139,14 @@ class FusionModel(nn.Module):
         patches_3d = self.proj(patches_3d)  # embedding
         patches_3d += self.pe_x
 
+        latent_3d = self.encoder3d(patches_3d)
+
         patches_2d = self.patch_embed2d(x["img"][:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
         patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
         patches_2d = self.proj(patches_2d)  # embedding
         patches_2d += self.pe_y
 
-        attn_out = self.fusor(patches_3d, patches_2d)
+        attn_out = self.fusor(latent_3d, patches_2d)
         x["img"] = attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
 
         return None
