@@ -1,6 +1,7 @@
 import os
 import sys
 from datetime import datetime
+import copy
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
@@ -70,10 +71,10 @@ class Config:
     width_2d: int = 1024
     width_3d: int = 512
     gpu: int = 7
-    lambda1: float = 0.0  # det loss weight
-    lambda2: float = 1.0  # cls loss weight
+    lambda1: float = 0.5  # det loss weight
+    lambda2: float = 0.5  # cls loss weight
     epochs: int = 100
-    lr: float = 0.04
+    lr: float = 0.1
     batch: int = 1
     grad_accum_steps: int = 12 // batch
 
@@ -153,9 +154,8 @@ class FusionModel(nn.Module):
         patches_2d += self.pe_y
 
         attn_out = self.fusor(latent_3d, patches_2d)
-        x["img"] = attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
 
-        return None
+        return attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -257,7 +257,7 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    model(data)
+                    data["img"] = model(data)
 
                     det_loss, _ = raw_model.loss(data)
                     preds = model.classifier(feature_map)
@@ -282,6 +282,18 @@ def main(cfg):
                     loss.backward()
 
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # DEBUG: Check gradients
+            def check_gradients(named_parameters):
+                for name, param in named_parameters:
+                    if param.requires_grad:
+                        if param.grad is None:
+                            print(f"Parameter {name} has no gradient.")
+                        else:
+                            print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
+
+            # Inside the training loop
+            # check_gradients(model.named_parameters())
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             optimizer.step()
