@@ -13,14 +13,15 @@ class Encoder(nn.Module):
         self.s_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
         self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
 
-    def forward(self, x):
+    def forward(self, input):
         """
         Args:
             x: (B, N, E)
         """
-        x = x + self.s_attn(x, x)
+        x, _ = input  # HACK: for nn.Sequential
+        x = x + self.s_attn((x, x))
         x = x + self.feed_forward(x)
-        return x
+        return x, _
 
 
 class Decoder(nn.Module):
@@ -32,14 +33,15 @@ class Decoder(nn.Module):
         self.c_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
         self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
 
-    def forward(self, x, y):
+    def forward(self, input):
         """
         Args:
-            x: (B, N, E)
-            y: (B, M, E)
+            x: (B, N, E) 3d latent vector
+            y: (B, M, E) 2d latent vector
         """
-        y = y + self.s_attn(y, y)
-        y = y + self.c_attn(y, x)
+        x, y = input  # HACK: for nn.Sequential
+        y = y + self.s_attn((y, y))
+        y = y + self.c_attn((x, y))
         y = y + self.feed_forward(y)
         return x, y
 
@@ -47,23 +49,28 @@ class Decoder(nn.Module):
 class Transformer(nn.Module):
     def __init__(self, n_layer: int, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
         super(Transformer, self).__init__()
-        self.encoder = nn.Sequential(*[Encoder(seq_len_x, seq_len_x, dim, num_heads, qkv_bias, qk_scale)] * n_layer)
-        self.decoder = nn.Sequential(*[Decoder(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)] * n_layer)
+        self.encoder = nn.Sequential(
+            *[Encoder(seq_len_x, seq_len_x, dim, num_heads, qkv_bias, qk_scale) for _ in range(n_layer)]
+        )
+        self.decoder = nn.Sequential(
+            *[Decoder(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale) for _ in range(n_layer)]
+        )
 
-    def forward(self, x, y):
+    def forward(self, input):
         """
         Args:
             x: (B, N, E) 3d embedding
             y: (B, M, E) 2d embedding
         """
-        x = self.encoder(x)
-        y = self.decoder(x, y)
-        return x, y
+        x, y = input  # HACK: for nn.Sequential
+        x, x = self.encoder((x, x))
+        x, y = self.decoder((x, y))
+        return x, y  # x: latent vector of 3d, y: latent vector of 2d which we should focus
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
-        super(MultiHeadCrossAttention, self).__init__()
+        super(MultiHeadAttention, self).__init__()
 
         self.num_heads = num_heads
 
@@ -82,7 +89,7 @@ class MultiHeadAttention(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x, y):
+    def forward(self, input):
         """
         Args:
             x: (B, N, E)
@@ -90,6 +97,7 @@ class MultiHeadAttention(nn.Module):
             x: key, value y: query
             x -> y
         """
+        x, y = input  # HACK: for nn.Sequential
         B, N, E = x.shape
         _, M, _ = y.shape
 
@@ -116,112 +124,112 @@ class MultiHeadAttention(nn.Module):
         return out
 
 
-class MultiHeadCrossAttention(nn.Module):
-    def __init__(self, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
-        super(MultiHeadCrossAttention, self).__init__()
+# class MultiHeadCrossAttention(nn.Module):
+#     def __init__(self, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
+#         super(MultiHeadCrossAttention, self).__init__()
 
-        self.num_heads = num_heads
+#         self.num_heads = num_heads
 
-        self.seq_len_x = seq_len_x
-        self.seq_len_y = seq_len_y
+#         self.seq_len_x = seq_len_x
+#         self.seq_len_y = seq_len_y
 
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim**-0.5
+#         assert dim % num_heads == 0, "dim must be divisible by num_heads"
+#         head_dim = dim // num_heads
+#         self.scale = qk_scale or head_dim**-0.5
 
-        self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
 
-        self.proj = nn.Linear(dim, dim)
+#         self.proj = nn.Linear(dim, dim)
 
-        self.norm = nn.LayerNorm(dim)
+#         self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x, y):
-        """
-        Args:
-            x: (B, N, E)
-            y: (B, M, E)
-            x: key, value y: query
-            x -> y
-        """
-        B, N, E = x.shape
-        _, M, _ = y.shape
+#     def forward(self, x, y):
+#         """
+#         Args:
+#             x: (B, N, E)
+#             y: (B, M, E)
+#             x: key, value y: query
+#             x -> y
+#         """
+#         B, N, E = x.shape
+#         _, M, _ = y.shape
 
-        x = self.norm(x)  # (B, N, E)
-        y = self.norm(y)  # (B, M, E)
+#         x = self.norm(x)  # (B, N, E)
+#         y = self.norm(y)  # (B, M, E)
 
-        k_x = (
-            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
-        v_x = (
-            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
-        q_y = (
-            self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
+#         k_x = (
+#             self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
+#         v_x = (
+#             self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
+#         q_y = (
+#             self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
 
-        attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
-        attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
-        out = attn @ v_x  # (B, num_heads, M, head_dim)
-        out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
+#         attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+#         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
+#         out = attn @ v_x  # (B, num_heads, M, head_dim)
+#         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
 
-        out += y  # residual connection
+#         out += y  # residual connection
 
-        return out
+#         return out
 
 
-class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, seq_len_x, dim, num_heads=8, qkv_bias=False, qk_scale=None):
-        super(MultiHeadSelfAttention, self).__init__()
+# class MultiHeadSelfAttention(nn.Module):
+#     def __init__(self, seq_len_x, dim, num_heads=8, qkv_bias=False, qk_scale=None):
+#         super(MultiHeadSelfAttention, self).__init__()
 
-        self.num_heads = num_heads
+#         self.num_heads = num_heads
 
-        self.seq_len_x = seq_len_x
+#         self.seq_len_x = seq_len_x
 
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim**-0.5
+#         assert dim % num_heads == 0, "dim must be divisible by num_heads"
+#         head_dim = dim // num_heads
+#         self.scale = qk_scale or head_dim**-0.5
 
-        self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
+#         self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
 
-        self.proj = nn.Linear(dim, dim)
+#         self.proj = nn.Linear(dim, dim)
 
-        self.norm = nn.LayerNorm(dim)
+#         self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x):
-        """
-        Args:
-            x: (B, N, E)
-            y: (B, M, E)
-            x: key, value y: query
-            x -> y
-        """
-        B, N, E = x.shape
-        _, M, _ = x.shape
+#     def forward(self, x):
+#         """
+#         Args:
+#             x: (B, N, E)
+#             y: (B, M, E)
+#             x: key, value y: query
+#             x -> y
+#         """
+#         B, N, E = x.shape
+#         _, M, _ = x.shape
 
-        x = self.norm(x)  # (B, N, E)
+#         x = self.norm(x)  # (B, N, E)
 
-        k_x = (
-            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
-        v_x = (
-            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
-        q_x = (
-            self.w_q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
-        )  # (B, num_heads, M, head_dim)
+#         k_x = (
+#             self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
+#         v_x = (
+#             self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
+#         q_x = (
+#             self.w_q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+#         )  # (B, num_heads, M, head_dim)
 
-        attn_scores = (q_x @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
-        attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
-        out = attn @ v_x  # (B, num_heads, M, head_dim)
-        out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
+#         attn_scores = (q_x @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+#         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
+#         out = attn @ v_x  # (B, num_heads, M, head_dim)
+#         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
 
-        out += x  # residual connection
+#         out += x  # residual connection
 
-        return out
+#         return out
 
 
 class FeedForward(nn.Module):

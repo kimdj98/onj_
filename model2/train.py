@@ -24,7 +24,11 @@ from ultralytics.nn.tasks import DetectionModel
 from omegaconf import DictConfig
 from einops import rearrange
 from model2.modules.utils import preprocess_data
-from model2.modules.transformer import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from model2.modules.transformer import (
+    Transformer,
+    PatchEmbed3D,
+    PatchEmbed2D,
+)  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
@@ -66,13 +70,12 @@ class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_pre_layer: int = 6
-    n_post_layer: int = 0
+    n_layer: int = 2
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 5
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
@@ -119,45 +122,27 @@ class FusionModel(nn.Module):
         self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
 
         self.proj = nn.Linear(model_config.n_embed, model_config.n_embed)
-
-        self.encoder3d = nn.Sequential(
-            *[
-                MultiHeadSelfAttention(seq_len_x=seq_len_x, dim=model_config.n_embed)
-                for _ in range(model_config.n_pre_layer)
-            ]
-        )
-        self.fusor = MultiHeadCrossAttention(seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed)
-        self.post = nn.Sequential(
-            *[
-                MultiHeadSelfAttention(seq_len_x=seq_len_y, dim=model_config.n_embed)
-                for _ in range(model_config.n_post_layer)
-            ]
+        self.transformer = Transformer(
+            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed
         )
 
-        self.feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
+        # self.feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
+        # self.ct_backbone = ct_backbone  # for feature-level fusion
 
-        self.ct_backbone = ct_backbone  # for feature-level fusion
-        self.yolo = yolo
-        self.classifier = Classify(c1=640, c2=2).to(trainer.device)  # NOTE: c1 depends on the detection model type
-
-    def forward(self, x: dict):
-        x = preprocess_data(self.base_path, x)
-
-        patches_3d = self.patch_embed3d(x["CT_image"])  # B E H W D (Batch, Embedding, Height, Width, Depth)
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
         patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
         patches_3d = self.proj(patches_3d)  # embedding
         patches_3d += self.pe_x
 
-        latent_3d = self.encoder3d(patches_3d)
-
-        patches_2d = self.patch_embed2d(x["img"][:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
+        patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
         patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
         patches_2d = self.proj(patches_2d)  # embedding
         patches_2d += self.pe_y
 
-        attn_out = self.fusor(latent_3d, patches_2d)
+        x, y = self.transformer((patches_3d, patches_2d))
 
-        return attn_out.unsqueeze(0).expand(-1, 3, -1, -1)  # 1 H W -> B 3 H W
+        return y
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -259,7 +244,7 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    data["img"] = model(data)
+                    data["img"] = model(data["CT_image"], data["img"])
 
                     det_loss, _ = raw_model.loss(data)
                     preds = model.classifier(feature_map)
