@@ -280,7 +280,7 @@ def main(cfg):
                             print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
             # Inside the training loop
-            # check_gradients(model.named_parameters())
+            check_gradients(model.named_parameters())
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             optimizer.step()

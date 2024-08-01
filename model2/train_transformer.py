@@ -84,25 +84,33 @@ class Config:
     grad_accum_steps: int = 12 // batch
 
 
-class CTBackbone(nn.Module):
-    def __init__(self):
-        super(CTBackbone, self).__init__()
+class Classifier(nn.Module):
+    def __init__(self, dim: int, seq_len: int, hidden_dim: int):
+        super(Classifier, self).__init__()
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
+        self.fc3 = nn.Linear(seq_len, 1)
+        self.gelu = nn.GELU()
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        x = self.fc1(x)
+        x = self.gelu(x)
+        x = self.fc2(x).squeeze(-1)
+        x = self.gelu(x)
+        x = self.fc3(x)
+        x = self.sigmoid(x)
         return x
 
 
-class FusionModel(nn.Module):
+class TransformerModel(nn.Module):
     def __init__(
         self,
         hydra_config: DictConfig,  # hydra config
         model_config: Config,  # model config
         data_example: dict,  # for model configuration depending on the data size and etc
-        trainer: DetectionTrainer,
-        ct_backbone: CTBackbone,
-        yolo: YOLO,
     ):
-        super(FusionModel, self).__init__()
+        super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
         self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
         self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
@@ -121,28 +129,30 @@ class FusionModel(nn.Module):
         self.pe_x = nn.Parameter(torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3)
         self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
 
-        self.proj = nn.Linear(model_config.n_embed, model_config.n_embed)
+        self.proj3d = nn.Linear(model_config.n_embed, model_config.n_embed)
+        self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
+
         self.transformer = Transformer(
             n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed
         )
 
-        # self.feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
-        # self.ct_backbone = ct_backbone  # for feature-level fusion
+        self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor):
         patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
         patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
-        patches_3d = self.proj(patches_3d)  # embedding
+        patches_3d = self.proj3d(patches_3d)  # 3d cubelet patch embedding
         patches_3d += self.pe_x
 
         patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
         patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
-        patches_2d = self.proj(patches_2d)  # embedding
+        patches_2d = self.proj2d(patches_2d)  # 2d square patch embedding
         patches_2d += self.pe_y
 
         x, y = self.transformer((patches_3d, patches_2d))
 
-        return y
+        out = self.classifier(y)
+        return out
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -196,10 +206,7 @@ def main(cfg):
     nb = len(train_loader)
     nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
 
-    raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
-    register_hook(raw_model, 8)
-
-    model = FusionModel(cfg, Config, next(iter(train_loader)), trainer, ct_backbone=None, yolo=raw_model)
+    model = TransformerModel(cfg, Config, next(iter(train_loader)))
     # use AdamW optimizer with cosine annealing
     # add classifier, raw_model, fusor, feature_expand, proj parameters
     optimizer = torch.optim.AdamW(
@@ -211,7 +218,7 @@ def main(cfg):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=nb * Config.epochs, eta_min=3e-4)
 
     # Set log_file
-    log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_lambda1_{Config.lambda1}_lambda2_{Config.lambda2}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+    log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"log.txt")
     with open(log_file, "w") as f:
@@ -244,31 +251,22 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    data["img"] = model(data["CT_image"], data["img"])
+                    preds = model(data["CT_image"], data["img"])
 
-                    det_loss, _ = raw_model.loss(data)
-                    preds = model.classifier(feature_map)
-
-                    data["onj_cls"] = torch.tensor(
-                        data["onj_cls"], dtype=torch.int64, device=trainer.device
-                    )  # HACK: to avoid error
-
-                    cls_loss = F.cross_entropy(
-                        preds,
-                        F.one_hot(data["onj_cls"], num_classes=2).view(1, -1).float(),
-                        reduction="mean",
-                    )
+                    # binary cross entropy loss
+                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
+                    cls_loss = -(onj_cls * torch.log(preds) + (1 - onj_cls) * torch.log(1 - preds))
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
-                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / last_accum_step
+                        loss = (cls_loss) / last_accum_step
                     else:
-                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / Config.grad_accum_steps
+                        loss = (cls_loss) / Config.grad_accum_steps  # mean loss
 
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -279,8 +277,11 @@ def main(cfg):
                         else:
                             print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
-            # Inside the training loop
-            # check_gradients(model.named_parameters())
+            print(f"----------------  gradients  -------------------------")
+            # check gradients for the first batch
+            # if j == 0:
+            check_gradients(model.named_parameters())
+            print(f"------------------------------------------------------")
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             optimizer.step()
@@ -288,19 +289,8 @@ def main(cfg):
             scheduler.step()
 
             with torch.no_grad():
-                # preds = F.softmax(preds, dim=1)
-                # pred = preds.argmax(dim=1).int().item()
-                # mark = (pred == data["onj_cls"]).int().item()
-                # log_message = (
-                #     f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}, Mark: {mark}, Pred: {pred}"
-                # )
                 log_message = f"epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f}"
                 print(log_message)
-
-                # with open(log_file, "a") as f:
-                #     f.write(
-                #         f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} mark {mark} pred {pred} lr {scheduler.get_last_lr()}\n"
-                #     )
 
                 with open(log_file, "a") as f:
                     f.write(
