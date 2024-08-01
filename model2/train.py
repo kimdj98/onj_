@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+
+nn.Transformer
 from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
@@ -22,7 +24,7 @@ from ultralytics.nn.tasks import DetectionModel
 from omegaconf import DictConfig
 from einops import rearrange
 from model2.modules.utils import preprocess_data
-from modules.attention import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from model2.modules.transformer import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
@@ -64,17 +66,17 @@ class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_pre_layer: int = 3
-    n_post_layer: int = 3
+    n_pre_layer: int = 6
+    n_post_layer: int = 0
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
     gpu: int = 7
-    lambda1: float = 0.5  # det loss weight
-    lambda2: float = 0.5  # cls loss weight
+    lambda1: float = 0.0  # det loss weight
+    lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 0.1
+    lr: float = 3e-4
     batch: int = 1
     grad_accum_steps: int = 12 // batch
 
@@ -281,7 +283,7 @@ def main(cfg):
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -307,7 +309,7 @@ def main(cfg):
                 # log_message = (
                 #     f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}, Mark: {mark}, Pred: {pred}"
                 # )
-                log_message = f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}"
+                log_message = f"epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f}"
                 print(log_message)
 
                 # with open(log_file, "a") as f:
@@ -316,7 +318,9 @@ def main(cfg):
                 #     )
 
                 with open(log_file, "a") as f:
-                    f.write(f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} lr {scheduler.get_last_lr()[0]}\n")
+                    f.write(
+                        f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} norm {norm:.4f} lr {scheduler.get_last_lr()[0]}\n"
+                    )
 
     model.eval()
 

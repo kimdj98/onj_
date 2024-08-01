@@ -21,7 +21,7 @@ from ultralytics.nn.tasks import DetectionModel
 from omegaconf import DictConfig
 from einops import rearrange
 from model2.modules.utils import preprocess_data
-from attention import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from model2.modules.transformer import MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 

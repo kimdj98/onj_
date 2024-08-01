@@ -1,11 +1,67 @@
-# cross_attention
+# transformer.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
 
-class MultiHeadCrossAttention(nn.Module):
+class Encoder(nn.Module):
+    def __init__(
+        self, seq_len_x: int, seq_len_y: int, dim: int, num_heads: int = 8, qkv_bias: bool = False, qk_scale=None
+    ):
+        super(Encoder, self).__init__()
+        self.s_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
+        self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, N, E)
+        """
+        x = x + self.s_attn(x, x)
+        x = x + self.feed_forward(x)
+        return x
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self, seq_len_x: int, seq_len_y: int, dim: int, num_heads: int = 8, qkv_bias: bool = False, qk_scale=None
+    ):
+        super(Decoder, self).__init__()
+        self.s_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
+        self.c_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
+        self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
+
+    def forward(self, x, y):
+        """
+        Args:
+            x: (B, N, E)
+            y: (B, M, E)
+        """
+        y = y + self.s_attn(y, y)
+        y = y + self.c_attn(y, x)
+        y = y + self.feed_forward(y)
+        return x, y
+
+
+class Transformer(nn.Module):
+    def __init__(self, n_layer: int, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
+        super(Transformer, self).__init__()
+        self.encoder = nn.Sequential(*[Encoder(seq_len_x, seq_len_x, dim, num_heads, qkv_bias, qk_scale)] * n_layer)
+        self.decoder = nn.Sequential(*[Decoder(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)] * n_layer)
+
+    def forward(self, x, y):
+        """
+        Args:
+            x: (B, N, E) 3d embedding
+            y: (B, M, E) 2d embedding
+        """
+        x = self.encoder(x)
+        y = self.decoder(x, y)
+        return x, y
+
+
+class MultiHeadAttention(nn.Module):
     def __init__(self, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
         super(MultiHeadCrossAttention, self).__init__()
 
@@ -18,11 +74,9 @@ class MultiHeadCrossAttention(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
 
-        # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
 
         self.proj = nn.Linear(dim, dim)
 
@@ -42,17 +96,70 @@ class MultiHeadCrossAttention(nn.Module):
         x = self.norm(x)  # (B, N, E)
         y = self.norm(y)  # (B, M, E)
 
-        # qkv = self.qkv(x).chunk(3, dim=-1)
-        # _, k_x, v_x = [
-        #     w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv
-        # ]  # (B, num_heads, M, head_dim)
+        k_x = (
+            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        v_x = (
+            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        q_y = (
+            self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
 
-        k_x = self.k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
-        v_x = self.v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
-        q_y = self.q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+        attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
+        out = attn @ v_x  # (B, num_heads, M, head_dim)
+        out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
 
-        # qkv = self.qkv(y).chunk(3, dim=-1)
-        # q_y, _, _ = [w.view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2) for w in qkv]
+        out += y  # residual connection
+
+        return out
+
+
+class MultiHeadCrossAttention(nn.Module):
+    def __init__(self, seq_len_x, seq_len_y, dim, num_heads=8, qkv_bias=False, qk_scale=None):
+        super(MultiHeadCrossAttention, self).__init__()
+
+        self.num_heads = num_heads
+
+        self.seq_len_x = seq_len_x
+        self.seq_len_y = seq_len_y
+
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
+
+        self.proj = nn.Linear(dim, dim)
+
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x, y):
+        """
+        Args:
+            x: (B, N, E)
+            y: (B, M, E)
+            x: key, value y: query
+            x -> y
+        """
+        B, N, E = x.shape
+        _, M, _ = y.shape
+
+        x = self.norm(x)  # (B, N, E)
+        y = self.norm(y)  # (B, M, E)
+
+        k_x = (
+            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        v_x = (
+            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        q_y = (
+            self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
 
         attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
@@ -76,11 +183,9 @@ class MultiHeadSelfAttention(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
 
-        # self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
+        self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
 
         self.proj = nn.Linear(dim, dim)
 
@@ -99,9 +204,15 @@ class MultiHeadSelfAttention(nn.Module):
 
         x = self.norm(x)  # (B, N, E)
 
-        k_x = self.k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
-        v_x = self.v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
-        q_x = self.q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)  # (B, num_heads, M, head_dim)
+        k_x = (
+            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        v_x = (
+            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
+        q_x = (
+            self.w_q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+        )  # (B, num_heads, M, head_dim)
 
         attn_scores = (q_x @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
@@ -111,6 +222,23 @@ class MultiHeadSelfAttention(nn.Module):
         out += x  # residual connection
 
         return out
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.1):
+        super(FeedForward, self).__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout),
+        )
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        return x + self.net(self.norm(x))
 
 
 class PatchEmbed3D(nn.Module):
@@ -204,20 +332,3 @@ class PatchEmbed2D(nn.Module):
         if self.norm:
             x = self.norm(x)
         return x
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout=0.0):
-        super(FeedForward, self).__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout),
-        )
-        self.norm = nn.LayerNorm(dim)
-
-    def forward(self, x):
-        return x + self.net(self.norm(x))
