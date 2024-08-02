@@ -70,16 +70,16 @@ class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 2
+    n_layer: int = 3
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 5
+    gpu: int = 4
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 3e-4
+    lr: float = 1e-6
     batch: int = 1
     grad_accum_steps: int = 12 // batch
 
@@ -133,7 +133,7 @@ class TransformerModel(nn.Module):
         self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
 
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed
+            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
         )
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
@@ -229,6 +229,21 @@ def main(cfg):
     )  # calculate how many times one epoch should repeat the batch
     last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
 
+    # for gradient flow debugging
+    def print_grad(name):
+        def hook(grad):
+            if grad.sum() == 0:
+                print(f"Gradient for {name} = 0")
+            else:
+                print(f"Gradient for {name} = {grad.abs().mean()}")
+
+        return hook
+
+    # # DEBUG: Check gradients
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.register_hook(print_grad(name))
+
     for epoch in range(Config.epochs):
         pbar = iter(enumerate(train_loader))
         # change model to train mode
@@ -277,11 +292,11 @@ def main(cfg):
                         else:
                             print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
-            print(f"----------------  gradients  -------------------------")
+            # print(f"----------------  gradients  -------------------------")
             # check gradients for the first batch
             # if j == 0:
-            check_gradients(model.named_parameters())
-            print(f"------------------------------------------------------")
+            # check_gradients(model.named_parameters())
+            # print(f"------------------------------------------------------")
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             optimizer.step()

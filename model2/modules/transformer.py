@@ -55,6 +55,8 @@ class Transformer(nn.Module):
         self.decoder = nn.Sequential(
             *[Decoder(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale) for _ in range(n_layer)]
         )
+        self.trash = None
+        self.trash2 = None
 
     def forward(self, input):
         """
@@ -62,10 +64,14 @@ class Transformer(nn.Module):
             x: (B, N, E) 3d embedding
             y: (B, M, E) 2d embedding
         """
-        x, y = input  # HACK: for nn.Sequential
-        x, x = self.encoder((x, x))
-        x, y = self.decoder((x, y))
-        return x, y  # x: latent vector of 3d, y: latent vector of 2d which we should focus
+        x1, y1 = input  # HACK: for nn.Sequential
+        x2, _ = self.encoder((x1, x1))
+        self.trash = x2
+        self.trash.retain_grad()
+        x3, y2 = self.decoder((x2, y1))
+        self.trash2 = y2
+        self.trash2.retain_grad()
+        return x3, y2  # x: latent vector of 3d, y: latent vector of 2d which we should focus
 
 
 class MultiHeadAttention(nn.Module):
@@ -82,7 +88,8 @@ class MultiHeadAttention(nn.Module):
         self.w_k = nn.Linear(dim, dim, bias=qkv_bias)
         self.w_v = nn.Linear(dim, dim, bias=qkv_bias)
 
-        self.norm = nn.LayerNorm(dim)
+        self.norm_x = nn.LayerNorm(dim)
+        self.norm_y = nn.LayerNorm(dim)
 
     def forward(self, input):
         """
@@ -96,25 +103,26 @@ class MultiHeadAttention(nn.Module):
         B, N, E = x.shape
         _, M, _ = y.shape
 
-        x = self.norm(x)  # (B, N, E)
-        y = self.norm(y)  # (B, M, E)
+        x = self.norm_x(x)  # (B, N, E)
+        if id(x) == id(y):  # self attention
+            y = self.norm_x(y)  # (B, M, E)
+        else:  # cross attention
+            y = self.norm_y(y)
 
         k_x = (
-            self.w_k(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+            self.w_k(x).reshape(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
         )  # (B, num_heads, M, head_dim)
         v_x = (
-            self.w_v(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+            self.w_v(x).reshape(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
         )  # (B, num_heads, M, head_dim)
         q_y = (
-            self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
+            self.w_q(y).reshape(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
         )  # (B, num_heads, M, head_dim)
 
-        attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+        attn_scores = torch.matmul(q_y, k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
         out = attn @ v_x  # (B, num_heads, M, head_dim)
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
-
-        out += y  # residual connection
 
         return out
 
@@ -164,7 +172,7 @@ class MultiHeadCrossAttention(nn.Module):
             self.w_q(y).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
         )  # (B, num_heads, M, head_dim)
 
-        attn_scores = (q_y @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+        attn_scores = torch.matmul(q_y, k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
         out = attn @ v_x  # (B, num_heads, M, head_dim)
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
@@ -217,7 +225,7 @@ class MultiHeadSelfAttention(nn.Module):
             self.w_q(x).view(B, -1, self.num_heads, E // self.num_heads).transpose(1, 2)
         )  # (B, num_heads, M, head_dim)
 
-        attn_scores = (q_x @ k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
+        attn_scores = torch.matmul(q_x, k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
         out = attn @ v_x  # (B, num_heads, M, head_dim)
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
@@ -241,7 +249,7 @@ class FeedForward(nn.Module):
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-        return x + self.net(self.norm(x))
+        return self.net(self.norm(x))
 
 
 class PatchEmbed3D(nn.Module):
