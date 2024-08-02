@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 from datetime import datetime
 import copy
 
@@ -70,16 +71,16 @@ class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 3
+    n_layer: int = 6
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 4
+    gpu: int = 5
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 1e-6
+    lr: float = 3e-6
     batch: int = 1
     grad_accum_steps: int = 12 // batch
 
@@ -133,7 +134,7 @@ class TransformerModel(nn.Module):
         self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
 
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
+            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=0.1
         )
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
@@ -204,7 +205,24 @@ def main(cfg):
     pbar = enumerate(train_loader)
 
     nb = len(train_loader)
-    nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
+
+    max_lr = Config.lr
+    min_lr = Config.lr * 0.1
+    warmup_steps = Config.epochs * nb // 10
+    max_steps = Config.epochs * nb
+
+    def get_lr(it):
+        # 1) linear warmup for warmup_iters steps
+        if it < warmup_steps:
+            return max_lr * (it + 1) / warmup_steps
+        # 2) if it > lr_decay_iters, return min learning rate
+        if it > max_steps:
+            return min_lr
+        # 3) in between, use cosine decay down to min learning rate
+        decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
+        return min_lr + coeff * (max_lr - min_lr)
 
     model = TransformerModel(cfg, Config, next(iter(train_loader)))
     # use AdamW optimizer with cosine annealing
@@ -240,9 +258,9 @@ def main(cfg):
         return hook
 
     # # DEBUG: Check gradients
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(print_grad(name))
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.register_hook(print_grad(name))
 
     for epoch in range(Config.epochs):
         pbar = iter(enumerate(train_loader))
@@ -252,6 +270,7 @@ def main(cfg):
 
         for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
             loss_accum = 0.0
+            preds = []
             for micro_steps in range(Config.grad_accum_steps):
                 try:
                     i, data = next(pbar)
@@ -266,11 +285,12 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    preds = model(data["CT_image"], data["img"])
+                    pred = model(data["CT_image"], data["img"])
+                    preds.append(pred.item())
 
                     # binary cross entropy loss
                     onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
-                    cls_loss = -(onj_cls * torch.log(preds) + (1 - onj_cls) * torch.log(1 - preds))
+                    cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
@@ -281,7 +301,7 @@ def main(cfg):
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -299,17 +319,21 @@ def main(cfg):
             # print(f"------------------------------------------------------")
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+            lr = get_lr((epoch * nb) + i)
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+
             optimizer.step()
             optimizer.zero_grad()
-            scheduler.step()
 
             with torch.no_grad():
                 log_message = f"epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f}"
                 print(log_message)
+                print(preds)
 
                 with open(log_file, "a") as f:
                     f.write(
-                        f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} norm {norm:.4f} lr {scheduler.get_last_lr()[0]}\n"
+                        f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} norm {norm:.4f} lr {(epoch*nb)+i+1}\n"  # TODO: fill in the lr
                     )
 
     model.eval()
