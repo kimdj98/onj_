@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-nn.Transformer
+nn.Conv1d
 from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
@@ -30,6 +30,7 @@ from model2.modules.transformer import (
     PatchEmbed3D,
     PatchEmbed2D,
 )  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from sklearn.metrics import roc_auc_score
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
 
@@ -66,23 +67,35 @@ from ultralytics.utils import (
 )
 
 
+class Logger:
+    def __init__(self, log_file):
+        self.log_file = log_file
+        with open(log_file, "w") as f:
+            pass
+        self.step = 0
+
+    def log(self, message):
+        with open(self.log_file, "a") as f:
+            f.write(f"{self.step}" + message)
+
+
 @dataclass
 class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 6
+    n_layer: int = 8
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 5
+    gpu: int = 7
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 3e-6
+    lr: float = 1e-6
     batch: int = 1
-    grad_accum_steps: int = 12 // batch
+    grad_accum_steps: int = 16 // batch
 
 
 class Classifier(nn.Module):
@@ -134,7 +147,7 @@ class TransformerModel(nn.Module):
         self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
 
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=0.1
+            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
         )
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
@@ -197,7 +210,7 @@ def main(cfg):
     train_loader = trainer.train_loader
     train_dataset = train_loader.dataset
 
-    test_loader = trainer.test_loader
+    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
     test_dataset = test_loader.dataset
 
     optimizer = trainer.optimizer
@@ -232,15 +245,10 @@ def main(cfg):
         lr=Config.lr,
     )
 
-    # cosine annealing
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=nb * Config.epochs, eta_min=3e-4)
-
     # Set log_file
     log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"log.txt")
-    with open(log_file, "w") as f:
-        pass
+    logger = Logger(os.path.join(log_dir, "log.txt"))
 
     max_full_batch = (
         len(train_loader) // Config.grad_accum_steps
@@ -258,9 +266,9 @@ def main(cfg):
         return hook
 
     # # DEBUG: Check gradients
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            param.register_hook(print_grad(name))
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.register_hook(print_grad(name))
 
     for epoch in range(Config.epochs):
         pbar = iter(enumerate(train_loader))
@@ -269,6 +277,8 @@ def main(cfg):
         model.to(trainer.device)
 
         for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
+            # NOTE: comment/uncomment below to block/pass training code
+            # continue
             loss_accum = 0.0
             preds = []
             for micro_steps in range(Config.grad_accum_steps):
@@ -278,19 +288,22 @@ def main(cfg):
                     break  # should break to next epoch since j is already at the last batch
 
                 with torch.cuda.amp.autocast(trainer.amp):
-
                     data = trainer.preprocess_batch(data)
                     data = preprocess_data(base_path, data)  # adds CT data and unify the data device
                     if data is None:  # case when only PA exist
+                        print("No data")
                         continue
 
                     # Forward pass
                     pred = model(data["CT_image"], data["img"])
-                    preds.append(pred.item())
+                    preds.append(round(pred.item(), 4))
 
                     # binary cross entropy loss
                     onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
                     cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
+
+                    # clamp the loss to avoid nan
+                    cls_loss = torch.clamp(cls_loss, 0, 100)
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
@@ -315,7 +328,7 @@ def main(cfg):
             # print(f"----------------  gradients  -------------------------")
             # check gradients for the first batch
             # if j == 0:
-            # check_gradients(model.named_parameters())
+            #     check_gradients(model.named_parameters())
             # print(f"------------------------------------------------------")
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
@@ -326,17 +339,47 @@ def main(cfg):
             optimizer.step()
             optimizer.zero_grad()
 
-            with torch.no_grad():
-                log_message = f"epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f}"
-                print(log_message)
-                print(preds)
+            log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
+            print(log_message)
+            print(preds)
 
-                with open(log_file, "a") as f:
-                    f.write(
-                        f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} norm {norm:.4f} lr {(epoch*nb)+i+1}\n"  # TODO: fill in the lr
-                    )
+            logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
 
-    model.eval()
+        # test the model with validation set
+        with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
+            model.eval()
+            loss_accum = 0.0
+            targets = []
+            preds = []
+
+            for k, data in enumerate(test_loader):
+                data = trainer.preprocess_batch(data)
+                data = preprocess_data(base_path, data)
+
+                if data is None:
+                    print("No data")
+                    continue
+
+                pred = model(data["CT_image"], data["img"])
+                preds.append(pred.item())
+
+                # binary cross entropy loss
+                onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
+                targets.append(onj_cls.item())
+
+                cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
+
+                # clamp the loss to avoid nan
+                cls_loss = torch.clamp(cls_loss, 0, 100)
+
+                loss_accum += cls_loss.detach()
+
+            loss_accum /= len(test_loader)
+
+            print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
+            logger.log(
+                f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
+            )
 
 
 if __name__ == "__main__":
