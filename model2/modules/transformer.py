@@ -66,11 +66,7 @@ class Transformer(nn.Module):
         """
         x1, y1 = input  # HACK: for nn.Sequential
         x2, _ = self.encoder((x1, x1))
-        self.trash = x2
-        self.trash.retain_grad()
         x3, y2 = self.decoder((x2, y1))
-        self.trash2 = y2
-        self.trash2.retain_grad()
         return x3, y2  # x: latent vector of 3d, y: latent vector of 2d which we should focus
 
 

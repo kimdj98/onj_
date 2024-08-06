@@ -77,6 +77,7 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
             data["CT_modal"] = "MDCT"
 
         else:  # if patient has no CT image (exception handler)
+            print(f"Patient in ONJ_labeling {patient} has no CT image")
             return None
 
     elif (base_path / "Non_ONJ_soi" / patient).exists():
@@ -96,6 +97,7 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
             data["CT_modal"] = "MDCT"
 
         else:  # if patient has no CT image (exception handler)
+            print(f"Patient in Non_ONJ_soi {patient} has no CT image")
             return None
 
     else:  # if patient not in both labels

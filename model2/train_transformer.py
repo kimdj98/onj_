@@ -75,8 +75,9 @@ class Logger:
         self.step = 0
 
     def log(self, message):
+        self.step += 1
         with open(self.log_file, "a") as f:
-            f.write(f"{self.step}" + message)
+            f.write(f"{self.step} " + message)
 
 
 @dataclass
@@ -84,15 +85,15 @@ class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 8
+    n_layer: int = 6
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 5
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
-    epochs: int = 100
+    epochs: int = 200
     lr: float = 1e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
@@ -147,7 +148,10 @@ class TransformerModel(nn.Module):
         self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
 
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_x,
+            seq_len_y=seq_len_y,
+            dim=model_config.n_embed,  # qk_scale=1.0
         )
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
@@ -246,7 +250,7 @@ def main(cfg):
     )
 
     # Set log_file
-    log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
     logger = Logger(os.path.join(log_dir, "log.txt"))
 
@@ -296,14 +300,17 @@ def main(cfg):
 
                     # Forward pass
                     pred = model(data["CT_image"], data["img"])
-                    preds.append(round(pred.item(), 4))
+                    eps = 1e-5
+                    # pred = torch.clamp(pred, eps, 1 - eps)  # avoid log(0) and log(1)
+                    if pred >= 1 - eps:
+                        pred -= eps
+                    elif pred <= eps:
+                        pred += eps
 
+                    preds.append(round(pred.item(), 4))
                     # binary cross entropy loss
                     onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
                     cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
-
-                    # clamp the loss to avoid nan
-                    cls_loss = torch.clamp(cls_loss, 0, 100)
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
@@ -314,7 +321,7 @@ def main(cfg):
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -354,17 +361,17 @@ def main(cfg):
 
             for k, data in enumerate(test_loader):
                 data = trainer.preprocess_batch(data)
-                data = preprocess_data(base_path, data)
+                proc_data = preprocess_data(base_path, data)
 
-                if data is None:
-                    print("No data")
+                if proc_data is None:
+                    print("No data: " + data["im_file"])
                     continue
 
-                pred = model(data["CT_image"], data["img"])
+                pred = model(proc_data["CT_image"], proc_data["img"])
                 preds.append(pred.item())
 
                 # binary cross entropy loss
-                onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
+                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0)
                 targets.append(onj_cls.item())
 
                 cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
