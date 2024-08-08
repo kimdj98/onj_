@@ -55,8 +55,6 @@ class Transformer(nn.Module):
         self.decoder = nn.Sequential(
             *[Decoder(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale) for _ in range(n_layer)]
         )
-        self.trash = None
-        self.trash2 = None
 
     def forward(self, input):
         """

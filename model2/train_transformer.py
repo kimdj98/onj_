@@ -90,13 +90,17 @@ class Config:
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 5
+    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 200
     lr: float = 1e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
+    eps: float = 1e-6
+    resume: str = (
+        "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
+    )
 
 
 class Classifier(nn.Module):
@@ -106,7 +110,6 @@ class Classifier(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, 1)
         self.fc3 = nn.Linear(seq_len, 1)
         self.gelu = nn.GELU()
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor):
         x = self.fc1(x)
@@ -114,7 +117,6 @@ class Classifier(nn.Module):
         x = self.fc2(x).squeeze(-1)
         x = self.gelu(x)
         x = self.fc3(x)
-        x = self.sigmoid(x)
         return x
 
 
@@ -148,10 +150,7 @@ class TransformerModel(nn.Module):
         self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
 
         self.transformer = Transformer(
-            n_layer=Config.n_layer,
-            seq_len_x=seq_len_x,
-            seq_len_y=seq_len_y,
-            dim=model_config.n_embed,  # qk_scale=1.0
+            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
         )
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
@@ -175,7 +174,12 @@ class TransformerModel(nn.Module):
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg):
+    from torch.utils.tensorboard import SummaryWriter
+
     base_path = cfg.data.data_dir
+    best_auroc = 0.0
+    best_loss = 1e6
+    epoch = 0
 
     # Hook function to capture the output
     def hook_fn(module, input, output):
@@ -249,10 +253,35 @@ def main(cfg):
         lr=Config.lr,
     )
 
+    # If resuming from a checkpoint
+    if Config.resume:
+        # Load checkpoint to CPU
+        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
+
+        # Load model state
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Move model to the correct device
+        model.to(trainer.device)
+
+        # Load optimizer state
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Move optimizer state to the correct device
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(trainer.device)
+
+        best_auroc = checkpoint["best_auroc"]
+        best_loss = checkpoint["best_loss"]
+        epoch = checkpoint["epoch"]
+
     # Set log_file
     log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
     logger = Logger(os.path.join(log_dir, "log.txt"))
+    writer = SummaryWriter(f"{log_dir}/tensorboard")
 
     max_full_batch = (
         len(train_loader) // Config.grad_accum_steps
@@ -269,12 +298,15 @@ def main(cfg):
 
         return hook
 
-    # # DEBUG: Check gradients
+    # DEBUG: Check gradients
     # for name, param in model.named_parameters():
     #     if param.requires_grad:
     #         param.register_hook(print_grad(name))
 
-    for epoch in range(Config.epochs):
+    criterion = torch.nn.BCEWithLogitsLoss()
+
+    if epoch <= Config.epochs: 
+        epoch += 1
         pbar = iter(enumerate(train_loader))
         # change model to train mode
         model.train()
@@ -300,17 +332,11 @@ def main(cfg):
 
                     # Forward pass
                     pred = model(data["CT_image"], data["img"])
-                    eps = 1e-5
-                    # pred = torch.clamp(pred, eps, 1 - eps)  # avoid log(0) and log(1)
-                    if pred >= 1 - eps:
-                        pred -= eps
-                    elif pred <= eps:
-                        pred += eps
 
-                    preds.append(round(pred.item(), 4))
+                    preds.append(round(F.sigmoid(pred.detach()).item(), 4))
                     # binary cross entropy loss
-                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0)
-                    cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
+                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+                    cls_loss = criterion(pred, onj_cls)
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
@@ -322,6 +348,9 @@ def main(cfg):
                     loss.backward()
 
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+
+            # log the gradients and parameter values to tensorboard to check the training process
+            writer.add_histogram("gradients", norm, epoch * nb + i)
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -368,16 +397,13 @@ def main(cfg):
                     continue
 
                 pred = model(proc_data["CT_image"], proc_data["img"])
-                preds.append(pred.item())
+                preds.append(round(F.sigmoid(pred.detach()).item(), 4))
 
                 # binary cross entropy loss
-                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0)
+                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
                 targets.append(onj_cls.item())
 
-                cls_loss = -(onj_cls * torch.log(pred) + (1 - onj_cls) * torch.log(1 - pred))
-
-                # clamp the loss to avoid nan
-                cls_loss = torch.clamp(cls_loss, 0, 100)
+                cls_loss = criterion(pred, onj_cls)
 
                 loss_accum += cls_loss.detach()
 
@@ -386,6 +412,46 @@ def main(cfg):
             print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
             logger.log(
                 f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
+            )
+
+            if best_loss > loss_accum.item():
+                best_loss = loss_accum.item()
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_auroc": best_auroc,
+                        "best_loss": best_loss,
+                    },
+                    f"{log_dir}/best_loss.pth",
+                )
+                print(f"best_loss: {best_loss} saved")
+
+            if best_auroc < roc_auc_score(y_true=targets, y_score=preds):
+                best_auroc = roc_auc_score(y_true=targets, y_score=preds)
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_auroc": best_auroc,
+                        "best_loss": best_loss,
+                    },
+                    f"{log_dir}/best_auroc.pth",
+                )
+                print(f"best_auroc: {best_auroc} saved")
+
+            # save the last model for the last epoch
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_auroc": best_auroc,
+                    "best_loss": best_loss,
+                },
+                f"{log_dir}/last.pth",
             )
 
 
