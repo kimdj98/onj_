@@ -231,7 +231,7 @@ def make_model(X_train, train_dataset, val_dataset, test_dataset, batch , epochs
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 best_model_wts = model.state_dict()
-                #torch.save(model.state_dict(), model_name)
+                torch.save(model.state_dict(), model_name)
 
         # Load the best model weights
         model.load_state_dict(best_model_wts)
@@ -270,22 +270,21 @@ def make_model(X_train, train_dataset, val_dataset, test_dataset, batch , epochs
         print(f'Node : {node_combinations[i]}')
         test_model(model, test_loader)
 
-        
+
+
+
 path = 'F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
 data_x = pd.read_csv(path + '/X_EW.csv', index_col=0)   
 data_y = pd.read_csv(path + '/Y_EW.csv', index_col=0)
 
 
 
-## 하위 5개 feature 뺀 다음 성능 비교하기 ## 
-###########################################
-######## 모델 저장 꼭 끄고 출력하기 #########
-###########################################
+'''
 bottom_5 = ['SM', 'DR', 'PMH__ANT', 'PMH_DB', 'PMH_t_RISED']
 bottom_10 = bottom_5 + ['MH_HYPE', 'MH_RF', 'SEX', 'PMH_CK', 'MH_CVA']
 #high_3 = ['PMH_MM' , 'ONJ_DIA_AGE' , 'SBP']
 data_x = data_x.drop(columns=bottom_10)
-
+'''
 
 
 
@@ -300,7 +299,7 @@ test_size = len(X) - train_size - val_size
 train_dataset, val_dataset, test_dataset = random_split(TensorDataset(X, y), [train_size, val_size, test_size])
 
 
-# Train dataset을 X와 y로 분리
+# splitting Train dataset back to X, y
 X_train = []
 y_train = []
 
@@ -308,23 +307,21 @@ for data, target in train_dataset:
     X_train.append(data.numpy())
     y_train.append(target.numpy())
 
-# 리스트를 텐서로 변환
+
+# list to tensor
 X_train = np.stack(X_train)
 y_train = np.stack(y_train)
 
 
 
-#[batch_size , epochs , layers , lr] = find_par(X_train, y_train)
+[batch_size , epochs , layers , lr] = find_par(X_train, y_train)
 
 
-
-
-
-
-
+'''
 batch_size = 20 
 epochs = 100
 layers = [[128,32]] 
 lr = 0.001
-                   
+'''
+
 make_model(X_train, train_dataset, val_dataset, test_dataset, batch_size , epochs , layers , lr)
