@@ -32,7 +32,7 @@ class BinaryClassificationModel(nn.Module):
         layer_list = []
         previous_dim = input_dim
         for layer_dim in layers:
-            for node in layer_dim:                                                      # 이렇게 for문 하나 더 추가한 거 이게 더 정확한 거 같은데
+            for node in layer_dim:                                                      
                 layer_list.append(nn.Linear(previous_dim, node))                        
                 layer_list.append(nn.ReLU())
                 previous_dim = node
@@ -42,9 +42,9 @@ class BinaryClassificationModel(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-                                                                                                ##############################################
-dummy = path + '/best_model_20_100_128.32_0.001.pt'                                              ################# 모델 지정!!! ################
-dum = dummy.split('/')[-1].split('_')[4].split('.')                                             ##############################################
+                                                                                                
+dummy = path + '/best_model_20_100_128.32_0.001.pt'                                              ################# model name ################
+dum = dummy.split('/')[-1].split('_')[4].split('.')                                             
 layers = []
 for i in range(len(dum)):
     layers.append(int(dum[i]))
@@ -58,9 +58,8 @@ model = BinaryClassificationModel(input_dim, layers)
 model.load_state_dict(torch.load(dummy))
 
 
-##### 근데 여기서 모델을 학습시킬 것도 아닌데 train_test_split 해야함? #####
 
-# 입력 데이터를 기반으로 Independent masker 생성
+
 masker = shap.maskers.Independent(X)
 
 #explainer = shap.Explainer(model, masker)
@@ -76,12 +75,12 @@ shap_values_0 = shap_values[:,:,0]                                              
 
 #print(shap_values.shape)                                                                               # (674, 53, 1)
 #print(X.shape)                                                                                         # (674, 53)
-shap.summary_plot(shap_values_0, X)                                                                     # 상위 20개 변수만 출력
-shap.summary_plot(shap_values_0, X, max_display=X.shape[1])                                             # 변수 전부 출력
+shap.summary_plot(shap_values_0, X)                                                                     
+shap.summary_plot(shap_values_0, X, max_display=X.shape[1])                                             
 
-#shap.dependence_plot("BMI", shap_values, X, interaction_index="SBP")                                   # 두 변수간 관계를 볼 수 있는 그래프
+#shap.dependence_plot("BMI", shap_values, X, interaction_index="SBP")                                   # relation btw two features
 
-#shap.plots.force(explainer.expected_value[1], shap_values[0][:], X.iloc[0, :], matplotlib = True)      # 개인 리포트 출력
+#shap.plots.force(explainer.expected_value[1], shap_values[0][:], X.iloc[0, :], matplotlib = True)      # personal report
 
-#shap.decision_plot(explainer.expected_value[1], shap_values_1, X.columns)  # 어떤 그래프인지 정확히는 모르겠음!
+#shap.decision_plot(explainer.expected_value[1], shap_values_1, X.columns) 
 # It visually depicts the model decisions by mapping the cumulative SHAP values for each prediction.
