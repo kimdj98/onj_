@@ -1,5 +1,3 @@
-# https://www.datacamp.com/tutorial/introduction-to-shap-values-machine-learning-interpretability
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
