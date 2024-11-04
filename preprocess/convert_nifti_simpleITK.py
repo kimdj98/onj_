@@ -12,6 +12,7 @@ import re
 error_folders = []
 CT_MODALS = ["MDCT", "CBCT"]
 
+
 def rename_files(files: list[str], parent: Path, modal: str):
     for file in files:
         # extract number in file.name file.name is like "CB1.jpg"
@@ -28,7 +29,9 @@ def preprocess(data_path, patients):
     """
     # first assert that the first image in jpg folder and the second image in jpg folder are not the same size
     for patient in tqdm(list(data_path.glob("*"))):
-        if patient.name in patients: # only for the patients in the list: may need to erase this to automatically process all patients
+        if (
+            patient.name in patients
+        ):  # only for the patients in the list: may need to erase this to automatically process all patients
             for modal in list(patient.glob("*")):
                 if modal.name in CT_MODALS:
                     modals = list(modal.glob("*/*"))
@@ -39,7 +42,7 @@ def preprocess(data_path, patients):
                                 if len(jpg_files) > 1:
                                     # compare the size of the jpg file
                                     jpg_files = sorted(jpg_files)
-                                    if cv2.imread(str(jpg_files[0])).shape != cv2.imread(str(jpg_files[1])).shape:                                         
+                                    if cv2.imread(str(jpg_files[0])).shape != cv2.imread(str(jpg_files[1])).shape:
                                         # check if the first and second image are the same size
                                         # if they are the same size, no slice info
                                         # if they are different size, slice info at the first image delete the first image
@@ -53,7 +56,7 @@ def preprocess(data_path, patients):
                                             if len(dcm_files) > 1:
                                                 os.remove(dcm_files[0])
                                                 print("Deleted", dcm_files[0])
-                                        
+
                                         # convert each image CB1 -> CB0, CB2 -> CB1, CB3 -> CB2 ...
                                         rename_files(jpg_files, modal, "jpg")
                                         # convert each dicom CB1 -> CB0, CB2 -> CB1, CB3 -> CB2 ...
@@ -79,19 +82,20 @@ def preprocess(data_path, patients):
                             continue
 
 
-def convert_modal(modal_folder:Path):
+def convert_modal(modal_folder: Path):
     # convert the modal folder dicom series to nifti output
     reader = sitk.ImageSeriesReader()
     dicom_names = reader.GetGDCMSeriesFileNames(str(modal_folder / "dicom"))
     reader.SetFileNames(dicom_names)
     image = reader.Execute()
     sitk.WriteImage(image, str(modal_folder / "nifti" / "output.nii.gz"))
-            
-def convert_patient(patient_folder:Path):
+
+
+def convert_patient(patient_folder: Path):
     for modal in list(patient_folder.glob("*")):
         if modal.name in CT_MODALS:
             modals = list(modal.glob("*/*"))
-            for modal in modals: # for each modal convert dicom to nifti
+            for modal in modals:  # for each modal convert dicom to nifti
                 try:
                     if "dcm" in os.listdir(modal):  # check if dicom folder named 'dcm' exists
                         os.rename(modal / "dcm", modal / "dicom")
@@ -107,6 +111,7 @@ def convert_patient(patient_folder:Path):
                     error_folders.append(modal / "dicom")
                     continue
 
+
 # Convert ONJ dicom file to nifti using SimpleITK
 def dicom_to_nifti(data_path):
     for patient in tqdm(list(data_path.glob("*"))):
@@ -115,44 +120,72 @@ def dicom_to_nifti(data_path):
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg: DictConfig):
-    DATAPATH = Path(cfg.data.data_dir)
-    
+    DATAPATH = Path("/mnt/aix22301/onj/dataset/v2")
+
     # run preprocess code once for each folder
     # below code deletes data with slice info in the first file
-    preprocess(DATAPATH / "Non_ONJ_soi", ["EW-0302", "EW-0544", "EW-0543"])
-    # preprocess(DATAPATH / "Non_ONJ_soi", ["EW-0302"])
-    preprocess(DATAPATH / "ONJ_labeling", ["EW-0478", "EW-0048", "EW-0465", "EW-0050", "EW-0480", "EW-0471", "EW-0533", "EW-0474", "EW-0476", "EW-0069"])
+    # preprocess(DATAPATH / "non_onj", ["EW-0100", "EW-0107","EW-0243", "EW-0302", "EW-0373", "EW-0477", "EW-0544"])
+    # # preprocess(DATAPATH / "Non_ONJ_soi", ["EW-0302"])
+    # preprocess(
+    #     DATAPATH / "onj",
+    #     ["EW-0478", "EW-0048", "EW-0465", "EW-0050", "EW-0480", "EW-0471", "EW-0533", "EW-0474", "EW-0476", "EW-0069"],
+    # )
 
     # NOTE: switch below two code lines to convert ONJ or Non_ONJ_soi
     # MODAL_PATH = DATAPATH / "ONJ_labeling"
-    MODAL_PATH = DATAPATH / "Non_ONJ_soi"
+    # MODAL_PATH = DATAPATH / "non_onj"
 
-    # /mnt/aix22301/onj/dataset/v0/Non_ONJ_soi/EW-0302/CBCT/20201022
-    convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_axial")
-    convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_coronal")
-    convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_sagittal")
+    # # /mnt/aix22301/onj/dataset/v0/Non_ONJ_soi/EW-0302/CBCT/20201022
+    # convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_axial")
+    # convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_coronal")
+    # convert_modal(MODAL_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_sagittal")
 
-    MODAL_PATH = DATAPATH / "ONJ_labeling"
+    ONJ_PATH = DATAPATH / "onj"
+    NON_ONJ_PATH = DATAPATH / "non_onj"
+    # # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0069/CBCT/20160817
+    # convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_axial")
+    # convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_coronal")
+    # convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_sagittal")
 
-    # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0069/CBCT/20160817
-    convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_axial")
-    convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_coronal")
-    convert_modal(MODAL_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_sagittal")
+    # # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0474/CBCT/20121203
+    # convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_axial")
+    # convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_coronal")
+    # convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_sagittal")
 
-    # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0474/CBCT/20121203
-    convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_axial")
-    convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_coronal")
-    convert_modal(MODAL_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_sagittal")
-
-    # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0476/CBCT/20120808
-    convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_axial")
-    convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_coronal")
-    convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_sagittal")
-
+    # # /mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0476/CBCT/20120808
+    # convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_axial")
+    # convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_coronal")
+    # convert_modal(MODAL_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_sagittal")
 
     # dicom_to_nifti(MODAL_PATH)
 
+    # # comment: convert non_onj data that had slice info in the first file into nifti file
 
+    # convert_modal(NON_ONJ_PATH / "EW-0100" / "MDCT" / "20211215" / "MDCT_axial")
+    # # convert_modal(NON_ONJ_PATH / "EW-0243" / "CBCT" / "20190724" / "CBCT_axial")
+    # convert_modal(NON_ONJ_PATH / "EW-0302" / "CBCT" / "20201022" / "CBCT_axial")
+    # convert_modal(NON_ONJ_PATH / "EW-0477" / "CBCT" / "20120710" / "CBCT_axial")
+    # convert_modal(NON_ONJ_PATH / "EW-0544" / "CBCT" / "20230510" / "CBCT_axial")
+
+    # # comment: convert onj data that had slice info in the first file into nifti file
+    # convert_modal(ONJ_PATH / "EW-0048" / "CBCT" / "20130321" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0050" / "CBCT" / "20121022" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0069" / "CBCT" / "20160817" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0158" / "MDCT" / "20220428" / "MDCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0323" / "MDCT" / "20211228" / "MDCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0465" / "CBCT" / "20130419" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0471" / "CBCT" / "20130319" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0478" / "CBCT" / "20130313" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0480" / "CBCT" / "20130508" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0481" / "CBCT" / "20130514" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0533" / "CBCT" / "20230419" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0543" / "CBCT" / "20230510" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0546" / "CBCT" / "20230525" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EWBS-0161" / "MDCT" / "20240621" / "MDCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0474" / "CBCT" / "20121203" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0547" / "CBCT" / "20230531" / "CBCT_axial")
+    # convert_modal(ONJ_PATH / "EW-0476" / "CBCT" / "20120808" / "CBCT_axial")
+    convert_modal(ONJ_PATH / "EW-0509" / "CBCT" / "20120814" / "CBCT_axial")
 
     for f in error_folders:
         print(f)
@@ -160,25 +193,8 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-    
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # try: 
+    # try:
     #     reader = sitk.ImageSeriesReader()
     #     dicom_names = reader.GetGDCMSeriesFileNames(str("/mnt/aix22301/onj/dataset/v0/Non_ONJ_soi/EW-0429/CBCT/20200616/CBCT_axial/dicom"))
     #     reader.SetFileNames(dicom_names)
@@ -196,7 +212,7 @@ if __name__ == "__main__":
     #     sitk.WriteImage(image, str("/mnt/aix22301/onj/dataset/v0/Non_ONJ_soi/EW-0068/CBCT/20160811/CBCT_coronal/nifti/output.nii.gz"))
     # except:
     #     error_folders.append("/mnt/aix22301/onj/dataset/v0/Non_ONJ_soi/EW-0068/CBCT/20160811/CBCT_coronal/dicom")
-    
+
     # EW-0544
     # try:
     # reader = sitk.ImageSeriesReader()

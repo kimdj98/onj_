@@ -40,8 +40,8 @@ def main(cfg: DictConfig):
     DATAPATH = Path(cfg.data.data_dir)
 
     # NOTE: switch below two code lines to convert ONJ or Non_ONJ_soi
-    MODAL_PATH = DATAPATH / "ONJ_labeling"
-    # MODAL_PATH = DATAPATH / "Non_ONJ_soi"
+    MODAL_PATH = DATAPATH / "onj"
+    # MODAL_PATH = DATAPATH / "non_onj"
 
     dicom_to_nifti(MODAL_PATH)
 
@@ -50,17 +50,17 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    # main()
+    main()
 
-    dicom2nifti.dicom_series_to_nifti(
-        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/dicom"),
-        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/nifti/output.nii.gz"),
-    )
+    # dicom2nifti.dicom_series_to_nifti(
+    #     str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/dicom"),
+    #     str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_axial/nifti/output.nii.gz"),
+    # )
 
-    dicom2nifti.dicom_series_to_nifti(
-        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/dicom"),
-        str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/nifti/output.nii.gz"),
-    )
+    # dicom2nifti.dicom_series_to_nifti(
+    #     str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/dicom"),
+    #     str("/mnt/aix22301/onj/dataset/v0/ONJ_labeling/EW-0323/MDCT/20211228/MDCT_coronal/nifti/output.nii.gz"),
+    # )
 
 
 """
