@@ -1,6 +1,6 @@
-path: /mnt/aix22301/onj/dataset/v0
-train: YOLO_PA3/images/train
-val: YOLO_PA3/images/val
+path: /mnt/aix22301/onj/dataset/v2
+train: YOLO_PA2/images/train
+val: YOLO_PA2/images/val
 nc: 1
 names: ['ONJ']
 
