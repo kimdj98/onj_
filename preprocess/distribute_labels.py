@@ -21,8 +21,17 @@ class Direction(Enum):
     CORONAL = "coronal"
 
 
+def write(log_file, log):
+    with open(log_file, "a") as f:
+        f.write(log + "\n")
+
+
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def distribute(cfg: DictConfig):
+    log_file = "./log/distribute_log.txt"
+    with open(log_file, "w") as f:
+        pass
+
     if cfg.data.split_modal == "CT":
         split_modal = Modal.CT
     elif cfg.data.split_modal == "panorama":
@@ -44,7 +53,7 @@ def distribute(cfg: DictConfig):
             # Step 2: write the JSON data to each patient folder
             for patient in tqdm(json_data["patients"]):
                 patient_name = patient["patient_name"]
-                patient_dir = base_dir / "ONJ_labeling" / patient_name
+                patient_dir = base_dir / "onj" / patient_name
 
                 # check if the patient_label has CT data
                 has_CT = False
@@ -55,15 +64,21 @@ def distribute(cfg: DictConfig):
                         break
 
                 if not has_CT:  # if the patient does not have CT data, skip
-                    print(f"Patient {patient_name} does not have CT label")
+                    log = f"Patient {patient_name} does not have CT data"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 if not patient_dir.exists():  # if the patient does not exist, skip
-                    print(f"Patient {patient_name} does not exist")
+                    log = f"Patient {patient_name} does not exist"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 if not (patient_dir / modal).exists():  # if the patient does not have CT data, skip
-                    print(f"Patient {patient_name} does not have {modal} data")
+                    log = f"Patient {patient_name} does not have {modal} data"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 with open(patient_dir / "label.json", "w") as patient_json_file:
@@ -72,7 +87,9 @@ def distribute(cfg: DictConfig):
                 # Step 3: distribute the metadata to each direction
                 folders = list((patient_dir / modal).glob("*"))
                 if folders == []:
-                    print(f"Patient {patient_name} does not have {modal} data")
+                    log = f"Patient {patient_name} does not have {modal} data"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 CT_with_date = list((patient_dir / modal).glob("*"))[0]
@@ -80,8 +97,17 @@ def distribute(cfg: DictConfig):
 
                 for dir in DIRECTIONS:
                     CT_dir = CT_with_date / (modal + "_" + dir)
-                    assert CT_dir.exists(), f"{CT_dir} does not exist."
-                    modal_dir_metadata = modal_metadata[dir]
+                    if not CT_dir.exists():
+                        log = f"Patient {patient_name} does not have {modal} {dir} data"
+                        print(log)
+                        write(log_file, log)
+                    try:
+                        modal_dir_metadata = modal_metadata[dir]
+                    except:
+                        log = f"Patient {patient_name} does not have label for {modal} {dir}"
+                        print(log)
+                        write(log_file, log)
+                        continue
 
                     width = modal_dir_metadata["width"]
                     height = modal_dir_metadata["height"]
@@ -124,15 +150,19 @@ def distribute(cfg: DictConfig):
             # Step 2: write the JSON data to each patient folder
             for patient in tqdm(json_data["patients"]):
                 patient_name = patient["patient_name"]
-                patient_dir = base_dir / "ONJ_labeling" / patient_name
+                patient_dir = base_dir / "onj" / patient_name
 
                 # Step3: deal with exceptions
                 if not patient_dir.exists():  # if the patient does not exist, skip
-                    print(f"Patient {patient_name} does not exist")
+                    log = f"Patient {patient_name} does not exist"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 if "panorama" not in patient.keys():
-                    print(f"Patient {patient_name} does not have panorama data")
+                    log = f"Patient {patient_name} does not have panorama data"
+                    print(log)
+                    write(log_file, log)
                     continue
 
                 # Step4: convert the bounding box coordinates to the normalized coordinates
