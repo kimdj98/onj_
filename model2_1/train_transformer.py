@@ -24,8 +24,8 @@ from ultralytics.nn.tasks import DetectionModel
 
 from omegaconf import DictConfig
 from einops import rearrange
-from model2.modules.utils import preprocess_data
-from model2.modules.transformer import (
+from model2_1.modules.utils import preprocess_data
+from model2_1.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
@@ -121,7 +121,7 @@ class Logger:
 
 @dataclass
 class Config:
-    n_embed: int = 1024
+    n_embed: int = 512
     n_head: int = 8
     n_class: int = 2
     n_layer: int = 4
@@ -133,7 +133,7 @@ class Config:
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 1e-6
+    lr: float = 3e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
@@ -175,19 +175,49 @@ class TransformerModel(nn.Module):
         # to configure the data size and types
         data = preprocess_data(self.base_path, data_example)
 
-        B, _, H, W, D = data["CT_image"].shape
-        seq_len_x = (
-            (H // model_config.n_patch3d[0]) * (W // model_config.n_patch3d[1]) * (D // model_config.n_patch3d[2])
+        # self.common_embed_dim = model_config.common_embed_dim
+        # CNN Feature Extractors
+        # 2D CNN for 2D images
+        self.cnn2d = nn.Sequential(
+            # Initial convolutional layer
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
+            nn.ReLU(),
+            # Additional convolutional blocks with downsampling
+            self._conv_block_2d(64, 128, downsample=True),
+            self._conv_block_2d(128, 256, downsample=True),
+            self._conv_block_2d(256, 512, downsample=True),
+            # self._conv_block_2d(512, 512, downsample=True), # TODO: remove this line if model is too small (optional)
         )
 
-        B, _, H, W = data["img"].shape
-        seq_len_y = (H // model_config.n_patch2d[0]) * (W // model_config.n_patch2d[1])
+        # 3D CNN for 3D images
+        self.cnn3d = nn.Sequential(
+            # Initial convolutional layer
+            nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3),
+            nn.ReLU(),
+            # Additional convolutional blocks with downsampling
+            self._conv_block_3d(64, 128, downsample=True),
+            self._conv_block_3d(128, 256, downsample=True),
+            self._conv_block_3d(256, 512, downsample=True),
+            # self._conv_block_3d(512, 512, downsample=True), # TODO: remove this line if model is too small (optional)
+        )
 
-        self.pe_x = nn.Parameter(torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3)
-        self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
+        seq_len_x = (
+            self.cnn3d(dummy_input3d).shape[2] * self.cnn3d(dummy_input3d).shape[3] * self.cnn3d(dummy_input3d).shape[4]
+        )
 
-        self.proj3d = nn.Linear(model_config.n_embed, model_config.n_embed)
-        self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
+        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
+        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
+
+        self.pe_x = nn.Parameter(
+            torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+        self.pe_y = nn.Parameter(
+            torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+
+        # self.proj3d = nn.Linear(model_config.common_embed_dim, model_config.n_embed)
+        # self.proj2d = nn.Linear(model_config.common_embed_dim, model_config.n_embed)
 
         self.transformer = Transformer(
             n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
@@ -195,20 +225,35 @@ class TransformerModel(nn.Module):
 
         self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
 
+    def _conv_block_2d(self, in_channels, out_channels, downsample=False):
+        stride = 2 if downsample else 1
+        layers = [
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.ReLU(),
+        ]
+        return nn.Sequential(*layers)
+
+    def _conv_block_3d(self, in_channels, out_channels, downsample=False):
+        stride = 2 if downsample else 1
+        layers = [
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.ReLU(),
+        ]
+        return nn.Sequential(*layers)
+
     def forward(self, x: torch.Tensor, y: torch.Tensor):
-        patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
-        patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
-        patches_3d = self.proj3d(patches_3d)  # 3d cubelet patch embedding
-        patches_3d += self.pe_x
+        feature_x = self.cnn3d(x)
+        feature_y = self.cnn2d(y)
 
-        patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
-        patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
-        patches_2d = self.proj2d(patches_2d)  # 2d square patch embedding
-        patches_2d += self.pe_y
+        feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
+        feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
 
-        x, y = self.transformer((patches_3d, patches_2d))
+        feature_x2 = feature_x1 + self.pe_x
+        feature_y2 = feature_y1 + self.pe_y
 
-        out = self.classifier(y)
+        x1, y1 = self.transformer((feature_x2, feature_y2))
+
+        out = self.classifier(y1)
         return out
 
 

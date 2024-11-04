@@ -24,15 +24,15 @@ from ultralytics.nn.tasks import DetectionModel
 
 from omegaconf import DictConfig
 from einops import rearrange
-from model2.modules.utils import preprocess_data
-from model2.modules.transformer import (
+from model3.modules.utils import preprocess_data
+from model3.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
 )  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 from sklearn.metrics import roc_auc_score
 
-dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
+dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
 
 version = "yolov8n"
 
@@ -129,11 +129,11 @@ class Config:
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
-    lr: float = 1e-6
+    lr: float = 3e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
@@ -233,13 +233,13 @@ def main(cfg):
         layer = list(model.model.children())[layer_index]
         layer.register_forward_hook(hook_fn)
 
-    custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
+    custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
     version = "yolov8x.pt"
     args = {
-        "model": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
+        "model": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
         "imgsz": [1024, 1024],
         "task": "detect",
-        "data": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
+        "data": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
         "mode": "train",
         "model": f"{version}",
         "device": f"{Config.gpu}",

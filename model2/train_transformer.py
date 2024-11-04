@@ -68,10 +68,21 @@ from ultralytics.utils import (
 
 
 class Logger:
+    # NOTE: do not move this file into other folder for refactoring for example utils.py or etc.
     def __init__(self, log_file):
         self.log_file = log_file
+        self.log_script_file = log_file.replace("log.txt", "log_script.py")
+        self.log_data_file = log_file.replace("log.txt", "log_data.txt")
         with open(log_file, "w") as f:
             pass
+        with open(self.log_script_file, "w") as f:
+            pass
+        with open(self.log_data_file, "w") as f:
+            pass
+
+        self.log_script()
+        self.log_data()
+
         self.step = 0
 
     def log(self, message):
@@ -79,28 +90,57 @@ class Logger:
         with open(self.log_file, "a") as f:
             f.write(f"{self.step} " + message)
 
+    def log_script(self):
+        # Open current file and log every lines of code inside the file
+        with open(__file__, "r") as f:
+            lines = f.readlines()
+
+        with open(self.log_script_file, "a") as f2:
+            f2.writelines(lines)
+
+    def log_data(self):
+        with open(dataset_yaml, "r") as f:
+            lines = f.readlines()
+
+        with open(self.log_data_file, "a") as f:
+            f.writelines(lines)
+
+    def resume(self, resume_file):  # NOT USED
+        # Open the existing log file to read its content
+        with open("/".join(resume_file.split("/")[:-1]) + "/log.txt", "r") as f:
+            lines = f.readlines()  # Read all lines
+
+        # Write the content to the new log file
+        with open(self.log_file, "w") as f2:
+            f2.writelines(lines)
+
+        # Get the last step number from the lines read
+        if lines:
+            self.step = int(lines[-1].split(" ")[0])
+
 
 @dataclass
 class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 6
+    n_layer: int = 4
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 6
+    gpu: int = 7
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
-    epochs: int = 200
+    epochs: int = 100
     lr: float = 1e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
-    resume: str = (
-        "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
-    )
+    resume: str = None  # set resume to None or path string
+    # resume: str = (
+    #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
+    # )
 
 
 class Classifier(nn.Module):
@@ -253,8 +293,23 @@ def main(cfg):
         lr=Config.lr,
     )
 
-    # If resuming from a checkpoint
+    # Set log_file
+    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_resume_{Config.resume!=None}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+    os.makedirs(log_dir, exist_ok=True)
+    logger = Logger(os.path.join(log_dir, "log.txt"))
+    writer = SummaryWriter(f"{log_dir}/tensorboard")
+
+    max_full_batch = (
+        len(train_loader) // Config.grad_accum_steps
+    )  # calculate how many times one epoch should repeat the batch
+    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
+
+    # ================================================================
+    #                     Resume from checkpoint
+    # ================================================================
     if Config.resume:
+        # logger.resume(Config.resume)
+
         # Load checkpoint to CPU
         checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
 
@@ -277,17 +332,6 @@ def main(cfg):
         best_loss = checkpoint["best_loss"]
         epoch = checkpoint["epoch"]
 
-    # Set log_file
-    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
-    os.makedirs(log_dir, exist_ok=True)
-    logger = Logger(os.path.join(log_dir, "log.txt"))
-    writer = SummaryWriter(f"{log_dir}/tensorboard")
-
-    max_full_batch = (
-        len(train_loader) // Config.grad_accum_steps
-    )  # calculate how many times one epoch should repeat the batch
-    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
-
     # for gradient flow debugging
     def print_grad(name):
         def hook(grad):
@@ -305,7 +349,7 @@ def main(cfg):
 
     criterion = torch.nn.BCEWithLogitsLoss()
 
-    if epoch <= Config.epochs: 
+    while epoch <= Config.epochs:
         epoch += 1
         pbar = iter(enumerate(train_loader))
         # change model to train mode
@@ -409,7 +453,10 @@ def main(cfg):
 
             loss_accum /= len(test_loader)
 
-            print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
+            try:
+                print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
+            except:
+                pass
             logger.log(
                 f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
             )

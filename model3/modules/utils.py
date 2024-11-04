@@ -60,44 +60,44 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
     # if base_path/ONJ_labeling/patient/MDCT exists, then it is a MDCT image and the label is 1 for ONJ
     # if base_path/Non_ONJ_soi/patient/CBCT exists, then it is a CBCT image and the label is 0 for non-ONJ
     # if base_path/Non_ONJ_soi/patient/MDCT exists, then it is a MDCT image and the label is 0 for non-ONJ
-    if (base_path / "ONJ_labeling" / patient).exists():
+    if (base_path / "onj" / patient).exists():
         data["onj_cls"] = 1
-        if (base_path / "ONJ_labeling" / patient / "CBCT").exists():
-            patient_path = base_path / "ONJ_labeling" / patient
-            ct_dir = base_path / "ONJ_labeling" / patient / "CBCT"
+        if (base_path / "onj" / patient / "CBCT").exists():
+            patient_path = base_path / "onj" / patient
+            ct_dir = base_path / "onj" / patient / "CBCT"
             ct_date_dir = list(ct_dir.glob("*"))[0]
             data["CT_image"] = ct_date_dir / "CBCT_axial" / "nifti" / "output.nii.gz"
             data["CT_modal"] = "CBCT"
 
-        elif (base_path / "ONJ_labeling" / patient / "MDCT").exists():
-            patient_path = base_path / "ONJ_labeling" / patient
-            ct_dir = base_path / "ONJ_labeling" / patient / "MDCT"
+        elif (base_path / "onj" / patient / "MDCT").exists():
+            patient_path = base_path / "onj" / patient
+            ct_dir = base_path / "onj" / patient / "MDCT"
             ct_date_dir = list(ct_dir.glob("*"))[0]
             data["CT_image"] = ct_date_dir / "MDCT_axial" / "nifti" / "output.nii.gz"
             data["CT_modal"] = "MDCT"
 
         else:  # if patient has no CT image (exception handler)
-            print(f"Patient in ONJ_labeling {patient} has no CT image")
+            print(f"Patient in onj {patient} has no CT image")
             return None
 
-    elif (base_path / "Non_ONJ_soi" / patient).exists():
+    elif (base_path / "non_onj" / patient).exists():
         data["onj_cls"] = 0
-        if (base_path / "Non_ONJ_soi" / patient / "CBCT").exists():
-            patient_path = base_path / "ONJ_labeling" / patient
-            ct_dir = base_path / "Non_ONJ_soi" / patient / "CBCT"
+        if (base_path / "non_onj" / patient / "CBCT").exists():
+            patient_path = base_path / "onj" / patient
+            ct_dir = base_path / "non_onj" / patient / "CBCT"
             ct_date_dir = list(ct_dir.glob("*"))[0]
             data["CT_image"] = ct_date_dir / "CBCT_axial" / "nifti" / "output.nii.gz"
             data["CT_modal"] = "CBCT"
 
-        elif (base_path / "Non_ONJ_soi" / patient / "MDCT").exists():
-            patient_path = base_path / "ONJ_labeling" / patient
-            ct_dir = base_path / "Non_ONJ_soi" / patient / "MDCT"
+        elif (base_path / "non_onj" / patient / "MDCT").exists():
+            patient_path = base_path / "onj" / patient
+            ct_dir = base_path / "non_onj" / patient / "MDCT"
             ct_date_dir = list(ct_dir.glob("*"))[0]
             data["CT_image"] = ct_date_dir / "MDCT_axial" / "nifti" / "output.nii.gz"
             data["CT_modal"] = "MDCT"
 
         else:  # if patient has no CT image (exception handler)
-            print(f"Patient in Non_ONJ_soi {patient} has no CT image")
+            print(f"Patient in non_onj {patient} has no CT image")
             return None
 
     else:  # if patient not in both labels
