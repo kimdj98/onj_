@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 def main(cfg: DictConfig) -> None:
     def inner(split: str = "train"):
         base_dir = Path(cfg.data.data_dir)
-        BASE_PATH = f"/mnt/aix22301/onj/dataset/v0"
+        BASE_PATH = f"/mnt/aix22301/onj/dataset/v2"
         DATA_PATH = f"YOLO_CLS_PA"
         if not os.path.exists(f"{BASE_PATH}/{DATA_PATH}"):
             os.makedirs(f"{BASE_PATH}/{DATA_PATH}/train/ONJ")
