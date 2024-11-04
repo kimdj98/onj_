@@ -22,10 +22,10 @@ def split_dataset(cfg: DictConfig) -> None:
     split = cfg.data.split_ratio
     test_split = cfg.data.test_split
     data_dir = Path(cfg.data.data_dir)
-    print(f"Spliiting dataset in {data_dir}... with split ratio: {split} and test split: {test_split}")
+    print(f"Spliting dataset in {data_dir}... with split ratio: {split} and test split: {test_split}")
 
-    onjs = list(data_dir.glob("ONJ_labeling/*"))
-    non_onjs = list(data_dir.glob("Non_ONJ_soi/*"))
+    onjs = list(data_dir.glob("onj/*"))
+    non_onjs = list(data_dir.glob("non_onj/*"))
 
     X = onjs + non_onjs
 
