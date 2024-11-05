@@ -5,6 +5,10 @@ import os
 # 'ONJ_AI_clinical_modified.xlsx' is the column-modified file of 'ONJ_AI임상정보.xlsx'
 # 'ONJ_patient_clinical.csv' is the 'ONJ_AI_clinical_modified.xlsx' converted to csv
 
+# Original excel file from google drive : 'ONJ_AI임상정보.xlsx'
+# Column-modified file of the original : 'ONJ_clinical_modified.xlsx'
+# 
+
 
 #local_path = '/home/sesameOil/Downloads'
 path = '/mnt/4TB1/onj/dataset/v0'
@@ -60,7 +64,7 @@ for i in range(len(data)):
     patient_code = profile['Code Number']
     
 
-    if profile['ONJ']=='O' :       # if ONJ 
+    if profile['ONJ']==1 :       # if ONJ 
               
         if not os.path.exists(path + '/ONJ_labeling/' + str(patient_code)):
             print(str(patient_code)) 
@@ -74,7 +78,7 @@ for i in range(len(data)):
 
 
 
-    elif profile['ONJ']=='X' :     # if Non-ONJ
+    elif profile['ONJ']==0 :     # if Non-ONJ
         
         if not os.path.exists(path + '/Non_ONJ_soi/' + str(patient_code)):
             print(str(patient_code))
