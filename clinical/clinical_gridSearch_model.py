@@ -273,9 +273,9 @@ def make_model(X_train, train_dataset, val_dataset, test_dataset, batch , epochs
 
 
 
-path = 'F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
-data_x = pd.read_csv(path + '/X_EW.csv', index_col=0)   
-data_y = pd.read_csv(path + '/Y_EW.csv', index_col=0)
+######path = 'F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
+data_x = pd.read_csv(path + '/data_X.csv', index_col=0)   
+data_y = pd.read_csv(path + '/data_Y.csv', index_col=0)
 
 
 
