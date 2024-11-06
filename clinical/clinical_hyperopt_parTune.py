@@ -122,9 +122,9 @@ def f_nn_cv(params):
 
 
 
-path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
-data_x = pd.read_csv(path + '/X_EW_new2.csv', index_col=0)   
-data_y = pd.read_csv(path + '/Y_EW_new2.csv', index_col=0)
+######path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
+data_x = pd.read_csv(path + '/data_X.csv', index_col=0)   
+data_y = pd.read_csv(path + '/data_Y.csv', index_col=0)
 
 
 
