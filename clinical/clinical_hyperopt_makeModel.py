@@ -15,12 +15,12 @@ np.random.seed(SEED)
 
 ## parameter setting ## parTune에서 print된 튜닝값 직접 입력
 batchSize = 31
-d1 = 0.362
-d2 = 0.333
-#d3 = 0.635
-u1 = 410
-u2 = 225
-#u3 = 703
+d1 = 0.362            ## dropout1
+d2 = 0.333            ## dropout2
+#d3 = 0.635           ## dropout3
+u1 = 410              ## unit1
+u2 = 225              ## unit2
+#u3 = 703             ## unit3
 opt = 'adadelta? adam? rmsprop?' ### optimizer만 line76에서 직접 설정
 
 
