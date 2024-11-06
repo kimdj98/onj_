@@ -14,9 +14,9 @@ import lime.lime_tabular
 import shap
 shap.initjs()
 
-path = 'F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
-X = pd.read_csv(path + '/X_EW.csv', index_col=0)         
-y = pd.read_csv(path + '/Y_EW.csv', index_col=0)
+######path = 'F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
+X = pd.read_csv(path + '/data_X.csv', index_col=0)         
+y = pd.read_csv(path + '/data_Y.csv', index_col=0)
 
 ten_X = torch.tensor(X.values, dtype=torch.float32)
 ten_y = torch.tensor(y.values, dtype=torch.float32)
