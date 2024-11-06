@@ -11,9 +11,9 @@ import numpy as np
 
 #shap.initjs()
 
-path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
-data_x = pd.read_csv(path + '/X_EW_new2.csv', index_col=0)         
-data_y = pd.read_csv(path + '/Y_EW_new2.csv', index_col=0)
+######path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
+data_x = pd.read_csv(path + '/data_X.csv', index_col=0)         
+data_y = pd.read_csv(path + '/data_Y.csv', index_col=0)
 
 
 
@@ -22,7 +22,7 @@ SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
-## parameter setting ##
+## parameter setting ## partTune의 튜닝값 직접 입력
 batchSize = 31
 d1 = 0.362
 d2 = 0.333
@@ -43,7 +43,7 @@ ten_y = torch.tensor(y_test.values, dtype=torch.float32)
 input_dim = data_x.shape[1]
 
 class BestModel(nn.Module):
-    def __init__(self):
+    def __init__(self):        
         super(BestModel, self).__init__()
         self.fc1 = nn.Linear(X_train.shape[1], u1)  # units1
         self.dropout1 = nn.Dropout(p=d1)  # dropout1
@@ -51,10 +51,10 @@ class BestModel(nn.Module):
         self.fc2 = nn.Linear(u1 , u2)  # units2
         self.dropout2 = nn.Dropout(p=d2)  # dropout2
 
-        #self.fc3 = nn.Linear(u2 , u3)  # units3
-        #self.dropout3 = nn.Dropout(p=d3)  # dropout3
+        #self.fc3 = nn.Linear(u2 , u3)  # units3                                            ## 레이어 2개 or 3개에 따라 이 부분 수정
+        #self.dropout3 = nn.Dropout(p=d3)  # dropout3                                       ## 여기
 
-        self.fc_final = nn.Linear(u2, 1)  # Final output layer
+        self.fc_final = nn.Linear(u2, 1)  # Final output layer                              ## 레이어 3개면 u3로 수정
 
         self.activation = nn.ReLU()  # ReLU activation as per original specification
 
@@ -65,8 +65,8 @@ class BestModel(nn.Module):
         x = self.activation(self.fc2(x))
         x = self.dropout2(x)
 
-        #x = self.activation(self.fc3(x))
-        #x = self.dropout3(x)
+        #x = self.activation(self.fc3(x))                                                   ## 여기 
+        #x = self.dropout3(x)                                                               ## 여기
 
         x = torch.sigmoid(self.fc_final(x))
         return x
@@ -75,23 +75,20 @@ class BestModel(nn.Module):
 
 # Initialize the model and load the saved state dict
 model = BestModel()
-model.load_state_dict(torch.load(path + '/best_model_EW_new2.pth'))
+model.load_state_dict(torch.load(path + '/best_model.pth'))  ## model1 or model2
 model.eval()
 
-#print("Expected input features:", X_train.shape[1])
-#print("X_test_tensor shape:", ten_X.shape)
 
 
 
-
-# Use SHAP's DeepExplainer for explaining the PyTorch model
-explainer = shap.GradientExplainer(model, ten_X)  # Use a subset of test data for background distribution
-shap_values = explainer.shap_values(ten_X)  # Explain predictions for the first 10 samples of X_test
+# SHAP
+explainer = shap.GradientExplainer(model, ten_X)  
+shap_values = explainer.shap_values(ten_X)  
 
 shap_values = np.array(shap_values)
 shap_values_0 = shap_values[:,:,0]
 
-# Visualize SHAP values for the first sample
+## summary plot for 20 highest features & all features
 X_test = pd.DataFrame(X_test)
 shap.summary_plot(shap_values_0, X_test)
 shap.summary_plot(shap_values_0, X_test, max_display=X_test.shape[1])
