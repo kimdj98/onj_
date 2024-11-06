@@ -8,6 +8,7 @@ sys.path.append("/mnt/aix22301/onj/code/")
 
 import hydra
 from dataclasses import dataclass
+from dataclasses import asdict
 
 import torch
 import torch.nn as nn
@@ -124,15 +125,15 @@ class Config:
     n_embed: int = 512
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 4
+    n_layer: int = 3
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
-    epochs: int = 100
+    epochs: int = 200
     lr: float = 3e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
@@ -186,7 +187,7 @@ class TransformerModel(nn.Module):
             self._conv_block_2d(64, 128, downsample=True),
             self._conv_block_2d(128, 256, downsample=True),
             self._conv_block_2d(256, 512, downsample=True),
-            self._conv_block_2d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
+            # self._conv_block_2d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
         )
 
         # 3D CNN for 3D images
@@ -198,7 +199,7 @@ class TransformerModel(nn.Module):
             self._conv_block_3d(64, 128, downsample=True),
             self._conv_block_3d(128, 256, downsample=True),
             self._conv_block_3d(256, 512, downsample=True),
-            self._conv_block_3d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
+            # self._conv_block_3d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
         )
 
         # B, _, H, W, D = data["CT_image"].shape
@@ -339,8 +340,15 @@ def main(cfg):
         lr=Config.lr,
     )
 
-    # Set log_file
-    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_resume_{Config.resume!=None}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+    # Convert Config to a dictionary
+    config_instance = Config()
+    config_dict = asdict(config_instance)
+
+    # Generate the log_dir by joining key-value pairs in config_dict
+    log_dir = "log/{}_{}".format(
+        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), "_".join(f"{key}_{value}" for key, value in config_dict.items())
+    )
+
     os.makedirs(log_dir, exist_ok=True)
     logger = Logger(os.path.join(log_dir, "log.txt"))
     writer = SummaryWriter(f"{log_dir}/tensorboard")
@@ -412,6 +420,8 @@ def main(cfg):
                     i, data = next(pbar)
                 except:
                     break  # should break to next epoch since j is already at the last batch
+
+                patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
 
                 with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
