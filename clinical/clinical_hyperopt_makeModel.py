@@ -13,7 +13,7 @@ SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
-## parameter setting ##
+## parameter setting ## parTune에서 print된 튜닝값 직접 입력
 batchSize = 31
 d1 = 0.362
 d2 = 0.333
@@ -21,7 +21,7 @@ d2 = 0.333
 u1 = 410
 u2 = 225
 #u3 = 703
-opt = 'adadelta? adam? rmsprop?' ### optimizer만 직접 설정
+opt = 'adadelta? adam? rmsprop?' ### optimizer만 line76에서 직접 설정
 
 
 
@@ -36,8 +36,8 @@ class BestModel(nn.Module):
         self.fc2 = nn.Linear(u1 , u2)  # units2
         self.dropout2 = nn.Dropout(p=d2)  # dropout2
 
-        #self.fc3 = nn.Linear(u2 , u3)  # units3
-        #self.dropout3 = nn.Dropout(p=d3)  # dropout3
+        #self.fc3 = nn.Linear(u2 , u3)  # units3                                                  ### 레이어 2개 or 3개에 따라 이 부분 수정
+        #self.dropout3 = nn.Dropout(p=d3)  # dropout3                                             ### 여기
 
         self.fc_final = nn.Linear(u2, 1)  # Final output layer
 
@@ -50,8 +50,8 @@ class BestModel(nn.Module):
         x = self.activation(self.fc2(x))
         x = self.dropout2(x)
 
-        #x = self.activation(self.fc3(x))
-        #x = self.dropout3(x)
+        #x = self.activation(self.fc3(x))                                                        ### 여기
+        #x = self.dropout3(x)                                                                    ### 여기
 
         x = torch.sigmoid(self.fc_final(x))
         return x
@@ -59,10 +59,10 @@ class BestModel(nn.Module):
 
 
 
-path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
-data_x = pd.read_csv(path + '/X_EW_new2.csv', index_col=0)   
-data_y = pd.read_csv(path + '/Y_EW_new2.csv', index_col=0)
-model_name = path + '/best_model_EW_new2.pth'
+#######path = 'D:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj'
+data_x = pd.read_csv(path + '/data_X.csv', index_col=0)   
+data_y = pd.read_csv(path + '/data_Y.csv', index_col=0)
+model_name = path + '/best_model1.pth'        ## model1 or model2
 
 # Train/test split
 X_train, X_val, y_train, y_val = train_test_split(data_x, data_y, test_size=0.4, random_state=SEED)
@@ -80,7 +80,7 @@ optimizer = optim.Adam(model.parameters())
 
 
 
-# Binary Cross Entropy Loss (since it's a binary classification problem)
+# Binary Cross Entropy Loss 
 criterion = nn.BCELoss()
 
 # Convert the training and validation data to PyTorch tensors
