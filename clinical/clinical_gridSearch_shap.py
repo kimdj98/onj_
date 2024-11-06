@@ -15,7 +15,7 @@ import shap
 
 shap.initjs()
 
-path = "/mnt/aix22301/onj/code/clinical/clinical"
+path = "F:/노트북/Work/보건복지부과제/ONJ/onj/inAndOut_onj"
 X = pd.read_csv(path + "/X_EW.csv", index_col=0)
 y = pd.read_csv(path + "/Y_EW.csv", index_col=0)
 
