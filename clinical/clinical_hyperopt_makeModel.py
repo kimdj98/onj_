@@ -9,7 +9,7 @@ import shap
 import numpy as np
 
 # 시드 고정
-SEED = 42
+SEED = 21
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
@@ -55,9 +55,9 @@ class BestModel(nn.Module):
 
 
 path = "/mnt/aix22301/onj/code/clinical"
-data_x = pd.read_csv(path + "/data_X.csv", index_col=0)
-data_y = pd.read_csv(path + "/data_Y.csv", index_col=0)
-model_name = path + "/best_model1.pth"  ## model1 or model2
+data_x = pd.read_csv(path + "/data_X2.csv", index_col=0)
+data_y = pd.read_csv(path + "/data_Y2.csv", index_col=0)
+model_name = path + "/best_model2.pth"  ## model1 or model2
 
 # Train/test split
 X_train, X_val, y_train, y_val = train_test_split(data_x, data_y, test_size=0.4, random_state=SEED)
