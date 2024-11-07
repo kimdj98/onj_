@@ -3,6 +3,7 @@ import sys
 import math
 from datetime import datetime
 import copy
+import pandas as pd
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
@@ -124,8 +125,8 @@ class Logger:
 class Config:
     n_embed: int = 512
     n_head: int = 8
-    n_class: int = 2
-    n_layer: int = 3
+    n_class: int = 1
+    n_layer: int = 2
     n_patch3d: tuple = (16, 16, 8)
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
@@ -134,7 +135,7 @@ class Config:
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 200
-    lr: float = 3e-6
+    lr: float = 1e-5
     batch: int = 1
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
@@ -144,9 +145,53 @@ class Config:
     # )
 
 
-class Classifier(nn.Module):
+class ClinicalModel(nn.Module):
+    def __init__(self, HPARAMS):
+        super(ClinicalModel, self).__init__()
+        self.HPARAMS = HPARAMS
+        self.fc1 = nn.Linear(HPARAMS["input_dim"], HPARAMS["u1"])  # units1
+        self.dropout1 = nn.Dropout(p=HPARAMS["d1"])  # dropout1
+
+        self.fc2 = nn.Linear(HPARAMS["u1"], HPARAMS["u2"])  # units2
+        self.dropout2 = nn.Dropout(p=HPARAMS["d2"])  # dropout2
+
+        self.fc_final = nn.Linear(HPARAMS["u2"], 1)  # Final output layer
+
+        self.activation = nn.ReLU()  # ReLU activation as per original specification
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.dropout1(x)
+
+        x = self.activation(self.fc2(x))
+        x = self.dropout2(x)
+
+        # x = torch.sigmoid(self.fc_final(x))
+        return x
+
+
+path = "/mnt/aix22301/onj/code/clinical"
+pt_CODE = pd.read_csv(path + "/pt_CODE.csv", index_col=0)
+data_x = pd.read_csv(path + "/data_X.csv", index_col=0)
+data_y = pd.read_csv(path + "/data_Y.csv", index_col=0)
+load_path = path + "/best_model2.pth"  ## model1 or model2
+
+HPARAMS = {
+    "input_dim": data_x.shape[1],
+    "u1": 410,
+    "u2": 225,
+    "d1": 0.362,
+    "d2": 0.333,
+    "load_path": load_path,
+}
+
+clinical_model = ClinicalModel(HPARAMS)
+# clinical_model.load_state_dict(torch.load(load_path))
+
+
+class ImageFeatureExtractor(nn.Module):
     def __init__(self, dim: int, seq_len: int, hidden_dim: int):
-        super(Classifier, self).__init__()
+        super(ImageFeatureExtractor, self).__init__()
         self.fc1 = nn.Linear(dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, 1)
         self.fc3 = nn.Linear(seq_len, 1)
@@ -156,8 +201,23 @@ class Classifier(nn.Module):
         x = self.fc1(x)
         x = self.gelu(x)
         x = self.fc2(x).squeeze(-1)
+        return x
+        # x = self.gelu(x)
+        # x = self.fc3(x)
+        # return x
+
+
+class Classifier(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int = 512, n_class: int = 1):
+        super(Classifier, self).__init__()
+        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, n_class)
+        self.gelu = nn.GELU()
+
+    def forward(self, x: torch.Tensor):
+        x = self.fc1(x)
         x = self.gelu(x)
-        x = self.fc3(x)
+        x = self.fc2(x)
         return x
 
 
@@ -224,8 +284,10 @@ class TransformerModel(nn.Module):
         self.transformer = Transformer(
             n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
         )
+        self.clinical_model = clinical_model
 
-        self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.classifier = Classifier(seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class)
 
     def _conv_block_2d(self, in_channels, out_channels, downsample=False):
         stride = 2 if downsample else 1
@@ -243,7 +305,7 @@ class TransformerModel(nn.Module):
         ]
         return nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
+    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
         feature_x = self.cnn3d(x)
         feature_y = self.cnn2d(y)
 
@@ -255,7 +317,14 @@ class TransformerModel(nn.Module):
 
         x1, y1 = self.transformer((feature_x2, feature_y2))
 
-        out = self.classifier(y1)
+        z1 = self.clinical_model(z)
+
+        y2 = self.image_feature_extractor(y1)
+
+        # concat the features y2([1, 4096]) and z1([225])
+        z1 = z1.unsqueeze(0)
+        concat_feature = torch.cat((y2, z1), dim=1)
+        out = self.classifier(concat_feature)
         return out
 
 
@@ -422,6 +491,15 @@ def main(cfg):
                     break  # should break to next epoch since j is already at the last batch
 
                 patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
+                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+
+                if idx.empty:
+                    print(f"{patient_id} has no clinical information")
+                    continue
+
+                else:
+                    clinical_data = data_x.iloc[idx.index[0]]
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
 
                 with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
@@ -431,7 +509,7 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    pred = model(data["CT_image"], data["img"])
+                    pred = model(data["CT_image"], data["img"], clinical_data)
 
                     preds.append(round(F.sigmoid(pred.detach()).item(), 4))
                     # binary cross entropy loss
@@ -492,11 +570,22 @@ def main(cfg):
                 data = trainer.preprocess_batch(data)
                 proc_data = preprocess_data(base_path, data)
 
+                patient_id = data["im_file"].split("/")[-1].split(".")[-2]
+                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+
+                if idx.empty:
+                    print(f"{patient_id} has no clinical information")
+                    continue
+
+                else:
+                    clinical_data = data_x.iloc[idx.index[0]]
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+
                 if proc_data is None:
                     print("No data: " + data["im_file"])
                     continue
 
-                pred = model(proc_data["CT_image"], proc_data["img"])
+                pred = model(proc_data["CT_image"], proc_data["img"], clinical_data)
                 preds.append(round(F.sigmoid(pred.detach()).item(), 4))
 
                 # binary cross entropy loss
