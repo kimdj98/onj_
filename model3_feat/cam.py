@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from dataclasses import asdict
 
 import pandas as pd
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 
@@ -50,6 +51,8 @@ import logging
 import time
 import hydra
 import torch
+import torchvision.transforms as transforms
+
 from torch.utils.data.dataset import ConcatDataset
 
 from ultralytics import YOLO
@@ -340,38 +343,75 @@ def main(cfg):
     device = torch.device(f"cuda:{Config.gpu}" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # test the model with validation set
-    with torch.no_grad():
-        model.eval()
-        patients = []
-        targets = []
-        preds = []
+    model.eval()
+    target_layer = model.cnn2d[4][0]  # Last CNN layer (2D)
 
-        for k, data in enumerate(test_loader):
-            data = trainer.preprocess_batch(data)
-            proc_data = preprocess_data(base_path, data)
+    patients = []
+    targets = []
+    preds = []
 
-            patient_id = data["im_file"].split("/")[-1].split(".")[-2]
+    for k, data in enumerate(test_loader):
+        # Define hooks to capture the activation maps and gradients
+        activations = []
+        gradients = []
 
-            if proc_data is None:
-                print("No data: " + data["im_file"])
-                continue
+        def forward_hook(module, input, output):
+            activations.append(output)
 
-            pred = model(proc_data["CT_image"].float(), proc_data["img"].float())
-            preds.append(round(F.sigmoid(pred.detach()).item(), 4))
+        def backward_hook(module, grad_in, grad_out):
+            gradients.append(grad_out[0])
 
-            # binary cross entropy loss
-            onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+        # Register the hooks
+        forward_handle = target_layer.register_forward_hook(forward_hook)
+        backward_handle = target_layer.register_backward_hook(backward_hook)
 
-            targets.append(onj_cls.item())
-            patients.append(patient_id)
+        data = trainer.preprocess_batch(data)
+        proc_data = preprocess_data(base_path, data)
 
+        patient_id = data["im_file"].split("/")[-1].split(".")[-2]
+
+        if proc_data is None:
+            print("No data: " + data["im_file"])
+            continue
+
+        pred = model(proc_data["CT_image"].float(), proc_data["img"].float())
+        pred = F.sigmoid(pred)
+
+        model.zero_grad()
+        pred.backward()
+
+        # Remove hooks
+        forward_handle.remove()
+        backward_handle.remove()
+
+        activation_maps = activations[0].squeeze(0).detach().cpu()  # shape [C, H, W]
+        grad_maps = gradients[0].detach().cpu()  # shape [C, H, W]
+
+        # Global-average-pool the gradients over the spatial dimension
+        alpha = grad_maps.view(grad_maps.size(0), -1).mean(dim=1)  # shape [C]
+
+        # Weight each activation channel by alpha
+        weighted_activations = activation_maps * alpha[:, None, None] * 50
+        cam = weighted_activations.sum(dim=0)
+
+        # ReLU activation
+        cam = F.relu(cam)
+
+        # Normalize the CAM
+        cam = (cam - cam.min()) / (cam.max() + 1e-8)
+
+        # Resize the CAM to the original image size
+        heatmap = plt.get_cmap("jet")(cam.numpy())[:, :, :3]  # shape [H, W, 3]
+        heatmap = transforms.ToPILImage()(heatmap)
+        heatmap.save(f"heatmap_{patient_id}_layer4.png")
+        print(f"Saved heatmap for patient {patient_id}")
         pass
-        # make dataframe for the results
-        df = pd.DataFrame({"patient": patients, "target": targets, "pred": preds})
 
-        # save the results to csv
-        df.to_csv("/mnt/aix22301/onj/code/model3_feat/results.csv", index=False)
+        # # Overlay the heatmap on the original image
+        # img = transforms.ToPILImage()(proc_data["img"].squeeze(0).cpu())
+
+        # # Save the image
+        # img.save(f"cam_{patient_id}.png")
 
 
 if __name__ == "__main__":

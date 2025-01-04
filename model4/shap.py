@@ -1,3 +1,5 @@
+# two types of task: 1. draw auroc curve 2. get the csv file for the prediction and target
+
 import os
 import sys
 import math
@@ -402,249 +404,73 @@ def main(cfg):
         return min_lr + coeff * (max_lr - min_lr)
 
     model = TransformerModel(cfg, Config, next(iter(train_loader)))
-    # use AdamW optimizer with cosine annealing
-    # add classifier, raw_model, fusor, feature_expand, proj parameters
-    optimizer = torch.optim.AdamW(
-        [{"params": model.parameters()}],  # put raw_model inside the model
-        lr=Config.lr,
-    )
+    # auroc 9.1666 (best model till 241113)
+    pth_dir = "/mnt/aix22301/onj/log/2024-11-07_17-06-46_n_embed_512_n_head_8_n_class_1_n_layer_2_n_patch3d_(16, 16, 8)_n_patch2d_(64, 64)_width_2d_1024_width_3d_512_gpu_7_lambda1_0.0_lambda2_1.0_epochs_200_lr_3e-06_batch_1_grad_accum_steps_16_eps_1e-06_resume_None/best_auroc.pth"
+    # pth_dir = None
+    checkpoint = torch.load(pth_dir, map_location=torch.device("cpu"))
+    model.load_state_dict(checkpoint["model_state_dict"])
 
-    # Convert Config to a dictionary
-    config_instance = Config()
-    config_dict = asdict(config_instance)
+    device = torch.device(f"cuda:{Config.gpu}" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
-    # Generate the log_dir by joining key-value pairs in config_dict
-    log_dir = "log/{}_{}".format(
-        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), "_".join(f"{key}_{value}" for key, value in config_dict.items())
-    )
+    # test the model with validation set
+    with torch.no_grad():
+        model.eval()
+        loss_accum = 0.0
+        targets = []
+        preds = []
+        patients = []
 
-    os.makedirs(log_dir, exist_ok=True)
-    logger = Logger(os.path.join(log_dir, "log.txt"))
-    writer = SummaryWriter(f"{log_dir}/tensorboard")
+        for k, data in enumerate(test_loader):
+            data = trainer.preprocess_batch(data)
+            proc_data = preprocess_data(base_path, data)
 
-    max_full_batch = (
-        len(train_loader) // Config.grad_accum_steps
-    )  # calculate how many times one epoch should repeat the batch
-    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
+            patient_id = data["im_file"].split("/")[-1].split(".")[-2]
+            idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
 
-    # ================================================================
-    #                     Resume from checkpoint
-    # ================================================================
-    if Config.resume:
-        # logger.resume(Config.resume)
+            if idx.empty:
+                print(f"{patient_id} has no clinical information")
+                continue
 
-        # Load checkpoint to CPU
-        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
-
-        # Load model state
-        model.load_state_dict(checkpoint["model_state_dict"])
-
-        # Move model to the correct device
-        model.to(trainer.device)
-
-        # Load optimizer state
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-        # Move optimizer state to the correct device
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(trainer.device)
-
-        best_auroc = checkpoint["best_auroc"]
-        best_loss = checkpoint["best_loss"]
-        epoch = checkpoint["epoch"]
-
-    # for gradient flow debugging
-    def print_grad(name):
-        def hook(grad):
-            if grad.sum() == 0:
-                print(f"Gradient for {name} = 0")
             else:
-                print(f"Gradient for {name} = {grad.abs().mean()}")
+                clinical_data = data_x.iloc[idx.index[0]]
+                clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
 
-        return hook
+            if proc_data is None:
+                print("No data: " + data["im_file"])
+                continue
 
-    # DEBUG: Check gradients
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            param.register_hook(print_grad(name))
+            pred = model(proc_data["CT_image"].float(), proc_data["img"].float(), clinical_data.float())
+            preds.append(round(F.sigmoid(pred.detach()).item(), 4))
 
-    criterion = torch.nn.BCEWithLogitsLoss()
+            # binary cross entropy loss
+            onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+            targets.append(onj_cls.item())
+            patients.append(patient_id)
 
-    while epoch <= Config.epochs:
-        epoch += 1
-        pbar = iter(enumerate(train_loader))
-        # change model to train mode
-        model.train()
-        model.to(trainer.device)
+        df = pd.DataFrame({"patient_id": patients, "target": targets, "pred": preds})
 
-        for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
-            # NOTE: comment/uncomment below to block/pass training code
-            # continue
-            loss_accum = 0.0
-            preds = []
-            for micro_steps in range(Config.grad_accum_steps):
-                try:
-                    i, data = next(pbar)
-                except:
-                    break  # should break to next epoch since j is already at the last batch
+        df.to_csv("onj_pred.csv", index=False)
 
-                patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
-                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+        auroc = roc_auc_score(targets, preds)
+        print(f"AUROC: {auroc}")
 
-                if idx.empty:
-                    print(f"{patient_id} has no clinical information")
-                    continue
+        # plot roc curve
+        from sklearn.metrics import roc_curve
+        import matplotlib.pyplot as plt
 
-                else:
-                    clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+        fpr, tpr, thresholds = roc_curve(targets, preds)
+        plt.clf()
+        plt.plot(fpr, tpr, "b", label="AUC = %0.2f" % auroc)
+        plt.plot([0, 1], [0, 1], "r--")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("Receiver Operating Characteristic")
+        # label the auroc score
+        plt.legend(loc="lower right")
 
-                with torch.cuda.amp.autocast(trainer.amp):
-                    data = trainer.preprocess_batch(data)
-                    data = preprocess_data(base_path, data)  # adds CT data and unify the data device
-                    if data is None:  # case when only PA exist
-                        print("No data")
-                        continue
-
-                    # Forward pass
-                    pred = model(data["CT_image"], data["img"], clinical_data)
-
-                    preds.append(round(F.sigmoid(pred.detach()).item(), 4))
-                    # binary cross entropy loss
-                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
-                    cls_loss = criterion(pred, onj_cls)
-
-                    # Backward pass
-                    if i >= (len(train_loader) - last_accum_step):
-                        loss = (cls_loss) / last_accum_step
-                    else:
-                        loss = (cls_loss) / Config.grad_accum_steps  # mean loss
-
-                    loss_accum += loss.detach()
-                    loss.backward()
-
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
-
-            # log the gradients and parameter values to tensorboard to check the training process
-            writer.add_histogram("gradients", norm, epoch * nb + i)
-
-            # DEBUG: Check gradients
-            def check_gradients(named_parameters):
-                for name, param in named_parameters:
-                    if param.requires_grad:
-                        if param.grad is None:
-                            print(f"Parameter {name} has no gradient.")
-                        else:
-                            print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
-
-            # print(f"----------------  gradients  -------------------------")
-            # check gradients for the first batch
-            # if j == 0:
-            #     check_gradients(model.named_parameters())
-            # print(f"------------------------------------------------------")
-
-            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-            lr = get_lr((epoch * nb) + i)
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
-
-            optimizer.step()
-            optimizer.zero_grad()
-
-            log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
-            print(log_message)
-            print(preds)
-
-            logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
-
-        # test the model with validation set
-        with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
-            model.eval()
-            loss_accum = 0.0
-            targets = []
-            preds = []
-
-            for k, data in enumerate(test_loader):
-                data = trainer.preprocess_batch(data)
-                proc_data = preprocess_data(base_path, data)
-
-                patient_id = data["im_file"].split("/")[-1].split(".")[-2]
-                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
-
-                if idx.empty:
-                    print(f"{patient_id} has no clinical information")
-                    continue
-
-                else:
-                    clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
-
-                if proc_data is None:
-                    print("No data: " + data["im_file"])
-                    continue
-
-                pred = model(proc_data["CT_image"], proc_data["img"], clinical_data)
-                preds.append(round(F.sigmoid(pred.detach()).item(), 4))
-
-                # binary cross entropy loss
-                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
-                targets.append(onj_cls.item())
-
-                cls_loss = criterion(pred, onj_cls)
-
-                loss_accum += cls_loss.detach()
-
-            loss_accum /= len(test_loader)
-
-            try:
-                print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
-            except:
-                pass
-            logger.log(
-                f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
-            )
-
-            if best_loss > loss_accum.item():
-                best_loss = loss_accum.item()
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "best_auroc": best_auroc,
-                        "best_loss": best_loss,
-                    },
-                    f"{log_dir}/best_loss.pth",
-                )
-                print(f"best_loss: {best_loss} saved")
-
-            if best_auroc < roc_auc_score(y_true=targets, y_score=preds):
-                best_auroc = roc_auc_score(y_true=targets, y_score=preds)
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "best_auroc": best_auroc,
-                        "best_loss": best_loss,
-                    },
-                    f"{log_dir}/best_auroc.pth",
-                )
-                print(f"best_auroc: {best_auroc} saved")
-
-            # save the last model for the last epoch
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_auroc": best_auroc,
-                    "best_loss": best_loss,
-                },
-                f"{log_dir}/last.pth",
-            )
+        # save the plot
+        plt.savefig("roc_curve.png")
 
 
 if __name__ == "__main__":
