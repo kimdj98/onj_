@@ -346,10 +346,6 @@ def main(cfg):
     model.eval()
     target_layer = model.cnn2d[4][0]  # Last CNN layer (2D)
 
-    patients = []
-    targets = []
-    preds = []
-
     for k, data in enumerate(test_loader):
         # Define hooks to capture the activation maps and gradients
         activations = []
