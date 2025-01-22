@@ -13,13 +13,19 @@ class Encoder(nn.Module):
         self.s_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
         self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
 
+        # We'll store the latest attention from this block
+        self.latest_attn = None
+
     def forward(self, input):
         """
         Args:
             x: (B, N, E)
         """
         x, x = input  # HACK: for nn.Sequential
-        x = x + self.s_attn((x, x))
+        out, attn_map = self.s_attn((x, x))
+        self.latest_attn = attn_map
+
+        x = x + out
         x = x + self.feed_forward(x)
         return x, x
 
@@ -33,6 +39,10 @@ class Decoder(nn.Module):
         self.c_attn = MultiHeadAttention(seq_len_x, seq_len_y, dim, num_heads, qkv_bias, qk_scale)
         self.feed_forward = FeedForward(dim=dim, hidden_dim=dim * 4)
 
+        # Store self-attn (on y) and cross-attn (x->y) for each forward pass
+        self.latest_attn_s = None
+        self.latest_attn_c = None
+
     def forward(self, input):
         """
         Args:
@@ -40,9 +50,19 @@ class Decoder(nn.Module):
             y: (B, M, E) 2d latent vector
         """
         x, y = input  # HACK: for nn.Sequential
-        y = y + self.s_attn((y, y))
-        y = y + self.c_attn((x, y))
+
+        # 1) Self-attn on y
+        out_s, attn_map_s = self.s_attn((y, y))
+        self.latest_attn_s = attn_map_s
+        y = y + out_s
+
+        # 2) Cross-attn from x to y
+        out_c, attn_map_c = self.c_attn((x, y))
+        self.latest_attn_c = attn_map_c
+        y = y + out_c
+
         y = y + self.feed_forward(y)
+
         return x, y
 
 
@@ -85,6 +105,10 @@ class MultiHeadAttention(nn.Module):
         self.norm_x = nn.LayerNorm(dim)
         self.norm_y = nn.LayerNorm(dim)
 
+        # We'll store the latest attention map for retrieval.
+        # shape = [B, num_heads, M, N] after softmax
+        self.latest_attn = None
+
     def forward(self, input):
         """
         Args:
@@ -115,10 +139,13 @@ class MultiHeadAttention(nn.Module):
 
         attn_scores = torch.matmul(q_y, k_x.transpose(-2, -1)) * self.scale  # (B, num_heads, M, N)
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
+
+        self.latest_attn = attn.detach()  # just attn if you want gradient
+
         out = attn @ v_x  # (B, num_heads, M, head_dim)
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
 
-        return out
+        return out, attn
 
 
 class MultiHeadCrossAttention(nn.Module):
