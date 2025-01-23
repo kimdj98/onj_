@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from einops import rearrange
 from model5.modules.utils import preprocess_data
-from model5.modules.backbone import ResNet18_2D
+from model5.modules.backbone import ResNet18_2D, resnet3d18
 from model5.modules.transformer import (
     Transformer,
     PatchEmbed3D,
@@ -54,7 +54,7 @@ class Config:
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 0
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 200
@@ -265,6 +265,7 @@ def main(cfg):
         [{"params": model.parameters()}],  # put raw_model inside the model
         lr=Config.lr,
     )
+    criterion = torch.nn.BCEWithLogitsLoss()
 
     # Convert Config to a dictionary
     config_instance = Config()
@@ -331,7 +332,10 @@ def main(cfg):
     #     if param.requires_grad:
     #         param.register_hook(print_grad(name))
 
-    criterion = torch.nn.BCEWithLogitsLoss()
+
+    # ================================================================
+    #                     Training loop
+    # ================================================================
 
     while epoch <= Config.epochs:
         epoch += 1
@@ -428,6 +432,9 @@ def main(cfg):
 
             logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
 
+    # ================================================================
+    #                     Training loop
+    # ================================================================
         # test the model with validation set
         with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
             model.eval()
@@ -479,6 +486,9 @@ def main(cfg):
                 f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
             )
 
+            # ================================================================
+            #                     Save the best model
+            # ================================================================
             if best_loss > loss_accum.item():
                 best_loss = loss_accum.item()
                 torch.save(
