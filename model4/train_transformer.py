@@ -131,7 +131,7 @@ class Config:
     n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 6
+    gpu: int = 0
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 200
@@ -221,6 +221,13 @@ class Classifier(nn.Module):
         return x
 
 
+class CNN2D(nn.Module):
+    def __init__(self, in_channels, out_channels, downsample=False):
+        super(CNN2D, self).__init__()
+        stride = 2 if downsample else 1
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+
+
 class TransformerModel(nn.Module):
     def __init__(
         self,
@@ -245,9 +252,14 @@ class TransformerModel(nn.Module):
             nn.ReLU(),
             # Additional convolutional blocks with downsampling
             self._conv_block_2d(64, 128, downsample=True),
+            self._conv_block_2d(128, 128, downsample=False),
+            # self._conv_block_2d(128, 128, downsample=False),
             self._conv_block_2d(128, 256, downsample=True),
+            self._conv_block_2d(256, 256, downsample=False),
+            # self._conv_block_2d(256, 256, downsample=False),
             self._conv_block_2d(256, 512, downsample=True),
-            # self._conv_block_2d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
+            self._conv_block_2d(512, 512, downsample=False),
+            # self._conv_block_2d(512, 512, downsample=False),  # TODO: remove this line if model is too small (optional)
         )
 
         # 3D CNN for 3D images
@@ -465,10 +477,10 @@ def main(cfg):
 
         return hook
 
-    # DEBUG: Check gradients
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            param.register_hook(print_grad(name))
+    # # DEBUG: Check gradients
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.register_hook(print_grad(name))
 
     criterion = torch.nn.BCEWithLogitsLoss()
 

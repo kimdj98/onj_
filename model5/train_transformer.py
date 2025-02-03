@@ -46,19 +46,19 @@ args = {
 
 @dataclass
 class Config:
-    n_embed: int = 512
+    n_embed: int = 256
     n_head: int = 8
     n_class: int = 1
     n_layer: int = 2
-    n_patch3d: tuple = (16, 16, 8)
-    n_patch2d: tuple = (64, 64)
+    # n_patch3d: tuple = (16, 16, 8)
+    # n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 0
+    gpu: int = 1
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 200
-    lr: float = 1e-5
+    lr: float = 1e-4
     batch: int = 1
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
@@ -81,12 +81,14 @@ class TransformerModel(nn.Module):
     ):
         super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(
-            patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
-        )
-        self.patch_embed2d = PatchEmbed2D(
-            patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
-        )
+
+        # NOTE: Patch tokenization not used in feature level fusion
+        # self.patch_embed3d = PatchEmbed3D(
+        #     patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
+        # )
+        # self.patch_embed2d = PatchEmbed2D(
+        #     patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
+        # )
 
         # to configure the data size and types
         data = preprocess_data(self.base_path, data_example)
@@ -97,25 +99,17 @@ class TransformerModel(nn.Module):
         self.cnn2d = ResNet18_2D()
 
         # 3D CNN for 3D images
-        self.cnn3d = nn.Sequential(
-            # Initial convolutional layer
-            nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            # Additional convolutional blocks with downsampling
-            self._conv_block_3d(64, 128, downsample=True),
-            self._conv_block_3d(128, 256, downsample=True),
-            self._conv_block_3d(256, 512, downsample=True),
-            # self._conv_block_3d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
-        )
+        self.cnn3d = resnet3d18()
 
         # B, _, H, W, D = data["CT_image"].shape
         dummy_input3d = torch.zeros(
             1, 1, model_config.width_3d, model_config.width_3d, 64
         )
+        dummy_output3d = self.cnn3d(dummy_input3d)
         seq_len_x = (
-            self.cnn3d(dummy_input3d).shape[2]
-            * self.cnn3d(dummy_input3d).shape[3]
-            * self.cnn3d(dummy_input3d).shape[4]
+            dummy_output3d.shape[2]
+            * dummy_output3d.shape[3]
+            * dummy_output3d.shape[4]
         )
 
         dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
@@ -331,7 +325,6 @@ def main(cfg):
     # for name, param in model.named_parameters():
     #     if param.requires_grad:
     #         param.register_hook(print_grad(name))
-
 
     # ================================================================
     #                     Training loop
