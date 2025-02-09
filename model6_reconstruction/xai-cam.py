@@ -20,15 +20,15 @@ import torch.nn.functional as F
 
 from omegaconf import DictConfig
 from einops import rearrange
-from model5.modules.utils import preprocess_data
-from model5.modules.backbone import ResNet18_2D
-from model5.modules.transformer import (
+from model6_reconstruction.modules.utils import preprocess_data
+from model6_reconstruction.modules.backbone import ResNet18_2D
+from model6_reconstruction.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
 )
-from model5.modules.clinical_model import * # includes parameters and data path for clinical model
-from model5.modules.post_processor import ImageFeatureExtractor, Classifier
+from model6_reconstruction.modules.clinical_model import *  # includes parameters and data path for clinical model
+from model6_reconstruction.modules.post_processor import ImageFeatureExtractor, Classifier
 from sklearn.metrics import roc_auc_score
 from logger import Logger
 from ultralytics import YOLO
@@ -64,9 +64,13 @@ class Config:
     grad_accum_steps: int = 16 // batch
     eps: float = 1e-6
     # resume: str = None  # set resume to None or path string
-    resume: str = ("/mnt/aix22301/onj/log/2025-01-20_16-49-48_n_embed_512_n_head_8_n_class_1_n_layer_2_n_patch3d_(16, 16, 8)_n_patch2d_(64, 64)_width_2d_1024_width_3d_512_gpu_7_lambda1_0.0_lambda2_1.0_epochs_200_lr_1e-05_batch_1_grad_accum_steps_16_eps_1e-06_resume_None/last.pth")
+    resume: str = (
+        "/mnt/aix22301/onj/log/2025-01-20_16-49-48_n_embed_512_n_head_8_n_class_1_n_layer_2_n_patch3d_(16, 16, 8)_n_patch2d_(64, 64)_width_2d_1024_width_3d_512_gpu_7_lambda1_0.0_lambda2_1.0_epochs_200_lr_1e-05_batch_1_grad_accum_steps_16_eps_1e-06_resume_None/last.pth"
+    )
+
 
 clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
+
 
 class TransformerModel(nn.Module):
     def __init__(
@@ -77,12 +81,8 @@ class TransformerModel(nn.Module):
     ):
         super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(
-            patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
-        )
-        self.patch_embed2d = PatchEmbed2D(
-            patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
-        )
+        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
+        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
 
         # self.common_embed_dim = model_config.common_embed_dim
         # CNN Feature Extractors
@@ -102,19 +102,13 @@ class TransformerModel(nn.Module):
         )
 
         # B, _, H, W, D = data["CT_image"].shape
-        dummy_input3d = torch.zeros(
-            1, 1, model_config.width_3d, model_config.width_3d, 64
-        )
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
         seq_len_x = (
-            self.cnn3d(dummy_input3d).shape[2]
-            * self.cnn3d(dummy_input3d).shape[3]
-            * self.cnn3d(dummy_input3d).shape[4]
+            self.cnn3d(dummy_input3d).shape[2] * self.cnn3d(dummy_input3d).shape[3] * self.cnn3d(dummy_input3d).shape[4]
         )
 
         dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
-        seq_len_y = (
-            self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
-        )
+        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
 
         self.pe_x = nn.Parameter(
             torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
@@ -132,19 +126,13 @@ class TransformerModel(nn.Module):
         )
         self.clinical_model = clinical_model
 
-        self.image_feature_extractor = ImageFeatureExtractor(
-            model_config.n_embed, seq_len_y, model_config.n_embed * 4
-        )
-        self.classifier = Classifier(
-            seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class
-        )
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.classifier = Classifier(seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class)
 
     def _conv_block_3d(self, in_channels, out_channels, downsample=False):
         stride = 2 if downsample else 1
         layers = [
-            nn.Conv3d(
-                in_channels, out_channels, kernel_size=3, stride=stride, padding=1
-            ),
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
             nn.ReLU(),
         ]
         return nn.Sequential(*layers)
@@ -170,6 +158,7 @@ class TransformerModel(nn.Module):
         concat_feature = torch.cat((y2, z1), dim=1)
         out = self.classifier(concat_feature)
         return out
+
 
 def normalize_heatmap(heatmap):
     """Normalize a heatmap to the range [0, 1]."""
@@ -201,8 +190,6 @@ def overlay_heatmaps_and_image(heatmaps, original_image, alpha=0.6):
     overlay = (1 - alpha) * original_image_np + alpha * combined_heatmap
 
     return overlay
-
-
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -245,17 +232,13 @@ def main(cfg):
         torch.cuda.current_device()  # HACK: Eagerly Initialize CUDA to avoid lazy initialization issue in _smart_load("trainer")
 
     yolo_model = YOLO(model=custom_yaml, task="detect", verbose=False)
-    trainer = yolo_model._smart_load("trainer")(
-        overrides=args, _callbacks=yolo_model.callbacks
-    )
+    trainer = yolo_model._smart_load("trainer")(overrides=args, _callbacks=yolo_model.callbacks)
     trainer._setup_train(world_size=1)
 
     train_loader = trainer.train_loader
     train_dataset = train_loader.dataset
 
-    test_loader = trainer.get_dataloader(
-        trainer.testset, batch_size=1, rank=-1, mode="train"
-    )
+    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
     test_dataset = test_loader.dataset
 
     criterion = torch.nn.BCEWithLogitsLoss()
@@ -312,8 +295,7 @@ def main(cfg):
     # test the model with validation set
     model.eval()
 
-    target_layers = [model.cnn2d.layer4[1].conv1,
-                     model.cnn2d.layer4[1].conv2]
+    target_layers = [model.cnn2d.layer4[1].conv1, model.cnn2d.layer4[1].conv2]
 
     for k, data in enumerate(test_loader):
         if k == 14:
@@ -355,14 +337,16 @@ def main(cfg):
 
         pred = model(proc_data["CT_image"].float(), proc_data["img"].float(), clinical_data.float())
 
-        pred_wo_img = model(proc_data["CT_image"].float(), torch.zeros_like(proc_data["img"]).float(), clinical_data.float())
+        pred_wo_img = model(
+            proc_data["CT_image"].float(), torch.zeros_like(proc_data["img"]).float(), clinical_data.float()
+        )
 
         img_contribution = pred - pred_wo_img
 
         # print(f"Prediction for {patient_id}:                {pred.item():.4f}")
         # print(f"Prediction without image for {patient_id}:  {pred_wo_img.item():.4f}")
         # print(f"Image contribution for {patient_id}:        {img_contribution.item():.4f}")
-        
+
         pred = F.sigmoid(pred)
 
         print(f"Probability for {patient_id}:               {pred.item():.4f}")
@@ -409,6 +393,7 @@ def main(cfg):
         overlay = overlay_heatmaps_and_image(heatmaps, original_image, alpha=0.6)
         plt.imsave(f"heatmap_{patient_id}_last_layer4.png", overlay)
         print(f"Saved heatmap for {patient_id}")
+
 
 if __name__ == "__main__":
     main()

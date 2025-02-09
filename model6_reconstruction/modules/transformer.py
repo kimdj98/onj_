@@ -3,6 +3,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from omegaconf import DictConfig
+from modules.utils import preprocess_data
+from modules.backbone import ResNet18_2D, resnet3d18
+from modules.clinical_model import *
+from modules.post_processor import ImageFeatureExtractor, Classifier
 
 
 class Encoder(nn.Module):
@@ -364,3 +369,90 @@ class PatchEmbed2D(nn.Module):
         if self.norm:
             x = self.norm(x)
         return x
+
+
+class TransformerModel(nn.Module):
+    def __init__(
+        self,
+        hydra_config: DictConfig,  # hydra config
+        model_config,  # model config (dataclass)
+        clinical_model: nn.Module,  # clinical model
+        data_example: dict,  # for model configuration depending on the data size and etc
+    ):
+        super(TransformerModel, self).__init__()
+        self.base_path = hydra_config.data.data_dir
+
+        # NOTE: Patch tokenization not used in feature level fusion
+        # self.patch_embed3d = PatchEmbed3D(
+        #     patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
+        # )
+        # self.patch_embed2d = PatchEmbed2D(
+        #     patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
+        # )
+
+        # to configure the data size and types
+        data = preprocess_data(self.base_path, data_example)
+
+        # self.common_embed_dim = model_config.common_embed_dim
+        # CNN Feature Extractors
+        # 2D CNN for 2D images
+        self.cnn2d = ResNet18_2D()
+
+        # 3D CNN for 3D images
+        self.cnn3d = resnet3d18()
+
+        # B, _, H, W, D = data["CT_image"].shape
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
+        dummy_output3d = self.cnn3d(dummy_input3d)
+        seq_len_x = dummy_output3d.shape[2] * dummy_output3d.shape[3] * dummy_output3d.shape[4]
+
+        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
+        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
+
+        self.pe_x = nn.Parameter(
+            torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+        self.pe_y = nn.Parameter(
+            torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+
+        self.transformer = Transformer(
+            n_layer=model_config.n_layer,
+            seq_len_x=seq_len_x,
+            seq_len_y=seq_len_y,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+        self.clinical_model = clinical_model
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.classifier = Classifier(seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class)
+
+    def _conv_block_3d(self, in_channels, out_channels, downsample=False):
+        stride = 2 if downsample else 1
+        layers = [
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.ReLU(),
+        ]
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
+        feature_x = self.cnn3d(x)
+        feature_y = self.cnn2d(y)
+
+        feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
+        feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
+
+        feature_x2 = feature_x1 + self.pe_x
+        feature_y2 = feature_y1 + self.pe_y
+
+        x1, y1 = self.transformer((feature_x2, feature_y2))
+
+        z1 = self.clinical_model(z)
+
+        y2 = self.image_feature_extractor(y1)
+
+        # concat the features y2([1, 4096]) and z1([225])
+        z1 = z1.unsqueeze(0)
+        concat_feature = torch.cat((y2, z1), dim=1)
+        out = self.classifier(concat_feature)
+        return out

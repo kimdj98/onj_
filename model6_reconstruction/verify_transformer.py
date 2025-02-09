@@ -19,15 +19,15 @@ import torch.nn.functional as F
 
 from omegaconf import DictConfig
 from einops import rearrange
-from model5.modules.utils import preprocess_data
-from model5.modules.backbone import ResNet18_2D
-from model5.modules.transformer import (
+from model6_reconstruction.modules.utils import preprocess_data
+from model6_reconstruction.modules.backbone import ResNet18_2D
+from model6_reconstruction.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
 )
-from model5.modules.clinical_model import * # includes parameters and data path for clinical model
-from model5.modules.post_processor import ImageFeatureExtractor, Classifier
+from model6_reconstruction.modules.clinical_model import *  # includes parameters and data path for clinical model
+from model6_reconstruction.modules.post_processor import ImageFeatureExtractor, Classifier
 from sklearn.metrics import roc_auc_score
 from logger import Logger
 from ultralytics import YOLO
@@ -81,12 +81,8 @@ class TransformerModel(nn.Module):
     ):
         super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(
-            patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
-        )
-        self.patch_embed2d = PatchEmbed2D(
-            patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
-        )
+        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
+        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
 
         # to configure the data size and types
         data = preprocess_data(self.base_path, data_example)
@@ -109,19 +105,13 @@ class TransformerModel(nn.Module):
         )
 
         # B, _, H, W, D = data["CT_image"].shape
-        dummy_input3d = torch.zeros(
-            1, 1, model_config.width_3d, model_config.width_3d, 64
-        )
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
         seq_len_x = (
-            self.cnn3d(dummy_input3d).shape[2]
-            * self.cnn3d(dummy_input3d).shape[3]
-            * self.cnn3d(dummy_input3d).shape[4]
+            self.cnn3d(dummy_input3d).shape[2] * self.cnn3d(dummy_input3d).shape[3] * self.cnn3d(dummy_input3d).shape[4]
         )
 
         dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
-        seq_len_y = (
-            self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
-        )
+        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
 
         self.pe_x = nn.Parameter(
             torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
@@ -139,19 +129,13 @@ class TransformerModel(nn.Module):
         )
         self.clinical_model = clinical_model
 
-        self.image_feature_extractor = ImageFeatureExtractor(
-            model_config.n_embed, seq_len_y, model_config.n_embed * 4
-        )
-        self.classifier = Classifier(
-            seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class
-        )
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.classifier = Classifier(seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class)
 
     def _conv_block_3d(self, in_channels, out_channels, downsample=False):
         stride = 2 if downsample else 1
         layers = [
-            nn.Conv3d(
-                in_channels, out_channels, kernel_size=3, stride=stride, padding=1
-            ),
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
             nn.ReLU(),
         ]
         return nn.Sequential(*layers)
@@ -177,7 +161,7 @@ class TransformerModel(nn.Module):
         concat_feature = torch.cat((y2, z1), dim=1)
         out = self.classifier(concat_feature)
         return out
-    
+
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg):
@@ -219,17 +203,13 @@ def main(cfg):
         torch.cuda.current_device()  # HACK: Eagerly Initialize CUDA to avoid lazy initialization issue in _smart_load("trainer")
 
     yolo_model = YOLO(model=custom_yaml, task="detect", verbose=False)
-    trainer = yolo_model._smart_load("trainer")(
-        overrides=args, _callbacks=yolo_model.callbacks
-    )
+    trainer = yolo_model._smart_load("trainer")(overrides=args, _callbacks=yolo_model.callbacks)
     trainer._setup_train(world_size=1)
 
     train_loader = trainer.train_loader
     train_dataset = train_loader.dataset
 
-    test_loader = trainer.get_dataloader(
-        trainer.testset, batch_size=1, rank=-1, mode="train"
-    )
+    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
     test_dataset = test_loader.dataset
 
     optimizer = trainer.optimizer
@@ -253,9 +233,7 @@ def main(cfg):
         # 3) in between, use cosine decay down to min learning rate
         decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
         assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (
-            1.0 + math.cos(math.pi * decay_ratio)
-        )  # coeff starts at 1 and goes to 0
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
 
     model = TransformerModel(cfg, Config, next(iter(train_loader)))
@@ -283,10 +261,8 @@ def main(cfg):
     max_full_batch = (
         len(train_loader) // Config.grad_accum_steps
     )  # calculate how many times one epoch should repeat the batch
-    
-    last_accum_step = (
-        len(train_loader) % Config.grad_accum_steps
-    )  # handle the edge case
+
+    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
 
     # ================================================================
     #                     Resume from checkpoint
@@ -316,7 +292,6 @@ def main(cfg):
         best_loss = checkpoint["best_loss"]
         epoch = checkpoint["epoch"]
 
-
     criterion = torch.nn.BCEWithLogitsLoss()
 
     while epoch <= Config.epochs:
@@ -326,9 +301,7 @@ def main(cfg):
         model.train()
         model.to(trainer.device)
 
-        for j in range(
-            max_full_batch + (last_accum_step != 0)
-        ):  # repeat for batch size + edge case
+        for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
             # NOTE: comment/uncomment below to block/pass training code
             # continue
             loss_accum = 0.0
@@ -348,15 +321,11 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(
-                        clinical_data.values, dtype=torch.float32
-                    ).to(trainer.device)
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
 
                 with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
-                    data = preprocess_data(
-                        base_path, data
-                    )  # adds CT data and unify the data device
+                    data = preprocess_data(base_path, data)  # adds CT data and unify the data device
                     if data is None:  # case when only PA exist
                         print("No data")
                         continue
@@ -390,9 +359,7 @@ def main(cfg):
                         if param.grad is None:
                             print(f"Parameter {name} has no gradient.")
                         else:
-                            print(
-                                f"Parameter {name} gradient: {param.grad.abs().mean()}"
-                            )
+                            print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
             # print(f"----------------  gradients  -------------------------")
             # check gradients for the first batch
@@ -434,9 +401,7 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(
-                        clinical_data.values, dtype=torch.float32
-                    ).to(trainer.device)
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
 
                 if proc_data is None:
                     print("No data: " + data["im_file"])
@@ -456,9 +421,7 @@ def main(cfg):
             loss_accum /= len(test_loader)
 
             try:
-                print(
-                    f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}"
-                )
+                print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
             except:
                 pass
             logger.log(
