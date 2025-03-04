@@ -2,17 +2,21 @@
 
 class Logger:
     # NOTE: do not move this file into other folder for refactoring for example utils.py or etc.
-    def __init__(self, log_file, dataset_yaml):
+    def __init__(self, log_file, dataset_yaml, main_file):
 
         self.log_file = log_file
+        self.main_file = main_file
         self.log_script_file = log_file.replace("log.txt", "log_script.py")
         self.log_data_file = log_file.replace("log.txt", "log_data.txt")
+        self.log_extra_file = log_file.replace("log.txt", "log_extra.txt")
 
         with open(log_file, "w") as f:
             pass
         with open(self.log_script_file, "w") as f:
             pass
         with open(self.log_data_file, "w") as f:
+            pass
+        with open(self.log_extra_file, "w") as f:
             pass
 
         self.dataset_yaml = dataset_yaml
@@ -29,7 +33,7 @@ class Logger:
 
     def log_script(self):
         # Open current file and log every lines of code inside the file
-        with open(__file__, "r") as f:
+        with open(self.main_file, "r") as f:
             lines = f.readlines()
 
         with open(self.log_script_file, "a") as f2:
@@ -41,6 +45,10 @@ class Logger:
 
         with open(self.log_data_file, "a") as f:
             f.writelines(lines)
+
+    def log_extra(self, message:str):            
+        with open(self.log_extra_file, "a") as f:
+            f.writelines(message)            
 
     def resume(self, resume_file):  # NOT USED
         # Open the existing log file to read its content

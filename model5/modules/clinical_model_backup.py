@@ -18,10 +18,10 @@ class ClinicalModel(nn.Module):
 
     def forward(self, x):
         x = self.activation(self.fc1(x))
-        # x = self.dropout1(x)
+        x = self.dropout1(x)
 
         x_hid = self.activation(self.fc2(x))
-        # x_hid = self.dropout2(x)
+        x_hid = self.dropout2(x_hid)
 
         x = torch.sigmoid(self.fc_final(x_hid))
         return x, x_hid
@@ -34,8 +34,8 @@ load_path = path + "/best_model2.pth"  ## model1 or model2
 
 HPARAMS = {
     "input_dim": data_x.shape[1],
-    "u1": 512,
-    "u2": 512,
+    "u1": 410,
+    "u2": 225,
     "d1": 0.362,
     "d2": 0.333,
     "load_path": load_path,

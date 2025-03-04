@@ -1,39 +1,41 @@
 import os
 import sys
+import math
 from datetime import datetime
-import copy
+import pandas as pd
+import argparse
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
 import hydra
 from dataclasses import dataclass
+from dataclasses import asdict
 
 import torch
 import torch.nn as nn
 
-nn.Transformer
+nn.Conv1d
 from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
-import ultralytics
-from ultralytics.nn.modules.head import Classify, Detect  # add classify to layer number 8
-from ultralytics.utils.loss import v8DetectionLoss, v8ClassificationLoss
-from ultralytics.models.yolo.detect import DetectionTrainer
-from ultralytics.nn.tasks import DetectionModel
-
 from omegaconf import DictConfig
 from einops import rearrange
-from model2.modules.utils import preprocess_data
-from model2.modules.transformer import (
+from model5.modules.utils import preprocess_data
+from model5.modules.backbone import ResNet18_2D, resnet3d18
+from model5.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
-)  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+)
 
-dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
+from model5.modules.clinical_model import *  # includes parameters and data path for clinical model
+from model5.modules.post_processor import ImageFeatureExtractor, Classifier
+from sklearn.metrics import roc_auc_score
+from logger import Logger
+from ultralytics import YOLO
 
+dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
 version = "yolov8n"
-
 args = {
     "task": "detect",
     "data": dataset_yaml,
@@ -43,111 +45,134 @@ args = {
     "mode": "train",
 }
 
-import logging
-import time
-import hydra
-import torch
-from torch.utils.data.dataset import ConcatDataset
-
-from ultralytics import YOLO
-from ultralytics.utils import (
-    ARGV,
-    ASSETS,
-    DEFAULT_CFG_DICT,
-    LOGGER,
-    RANK,
-    TQDM,
-    SETTINGS,
-    callbacks,
-    checks,
-    emojis,
-    yaml_load,
-)
-
 
 @dataclass
 class Config:
-    n_embed: int = 1024
-    n_head: int = 8
-    n_class: int = 2
+    debug: bool = False
+    n_embed: int = 256
+    n_head: int = 4
+    n_class: int = 1
     n_layer: int = 2
-    n_patch3d: tuple = (16, 16, 8)
-    n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 5
+    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
-    lambda2: float = 1.0  # cls loss weight
+    lambda2: float = 1.0  #  cls loss weight
     epochs: int = 100
-    lr: float = 3e-4
+    lr: float = 3e-6
     batch: int = 1
-    grad_accum_steps: int = 12 // batch
+    grad_accum_steps: int = 16 // batch
+    eps: float = 1e-6
+    resume: str = None  # set resume to None or path string
+
+    # resume: str = (
+    #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
+    # )
 
 
-class CTBackbone(nn.Module):
-    def __init__(self):
-        super(CTBackbone, self).__init__()
-
-    def forward(self, x):
-        return x
+clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
 
 
-class FusionModel(nn.Module):
+class TransformerModel(nn.Module):
     def __init__(
         self,
         hydra_config: DictConfig,  # hydra config
         model_config: Config,  # model config
         data_example: dict,  # for model configuration depending on the data size and etc
-        trainer: DetectionTrainer,
-        ct_backbone: CTBackbone,
-        yolo: YOLO,
     ):
-        super(FusionModel, self).__init__()
+        super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
-        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
 
         # to configure the data size and types
         data = preprocess_data(self.base_path, data_example)
 
-        B, _, H, W, D = data["CT_image"].shape
-        seq_len_x = (
-            (H // model_config.n_patch3d[0]) * (W // model_config.n_patch3d[1]) * (D // model_config.n_patch3d[2])
-        )
+        # self.common_embed_dim = model_config.common_embed_dim
+        # CNN Feature Extractors
+        # 2D CNN for 2D images
+        self.cnn2d = ResNet18_2D()
 
-        B, _, H, W = data["img"].shape
-        seq_len_y = (H // model_config.n_patch2d[0]) * (W // model_config.n_patch2d[1])
+        # 3D CNN for 3D images
+        self.cnn3d = resnet3d18()
 
-        self.pe_x = nn.Parameter(torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3)
-        self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
+        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
+        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
 
-        self.proj = nn.Linear(model_config.n_embed, model_config.n_embed)
+        # B, _, H, W, D = data["CT_image"].shape
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
+        dummy_output3d = self.cnn3d(dummy_input3d)
+        seq_len_x = dummy_output3d.shape[2] * dummy_output3d.shape[3] * dummy_output3d.shape[4]
+
+        self.pe_x = nn.Parameter(
+            torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+        self.pe_y = nn.Parameter(
+            torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_x,
+            seq_len_y=seq_len_y,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+        self.transformer_reverse = Transformer(
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_y,
+            seq_len_y=seq_len_x,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+        self.clinical_model = clinical_model
+
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.CT_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_x, model_config.n_embed * 4)
+        self.classifier = Classifier(
+            seq_len_y + seq_len_x + clinical_model.HPARAMS["u2"], hidden_dim=512, n_class=model_config.n_class
         )
 
-        # self.feature_expand = nn.Linear(Config.n_embed, Config.width_2d).to(trainer.device)
-        # self.ct_backbone = ct_backbone  # for feature-level fusion
+    def _conv_block_3d(self, in_channels, out_channels, downsample=False):
+        stride = 2 if downsample else 1
+        layers = [
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.ReLU(),
+        ]
+        return nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
-        patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
-        patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
-        patches_3d = self.proj(patches_3d)  # embedding
-        patches_3d += self.pe_x
+    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
+        feature_x = self.cnn3d(x)
+        feature_y = self.cnn2d(y)
 
-        patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
-        patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
-        patches_2d = self.proj(patches_2d)  # embedding
-        patches_2d += self.pe_y
+        feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
+        feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
 
-        x, y = self.transformer((patches_3d, patches_2d))
+        feature_x2 = feature_x1 + self.pe_x
+        feature_y2 = feature_y1 + self.pe_y
 
-        return y
+        _, y1 = self.transformer((feature_x2, feature_y2))
+
+        _, x1 = self.transformer_reverse((feature_y2, feature_x2))
+
+        z1 = self.clinical_model(z)
+
+        y2 = self.image_feature_extractor(y1)
+        x2 = self.CT_feature_extractor(x1)
+
+        # concat the features y2([1, 4096]) and z1([225])
+        z1 = z1.unsqueeze(0)
+        concat_feature = torch.cat((y2, x2, z1), dim=1)
+        out = self.classifier(concat_feature)
+        return out
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg):
+    from torch.utils.tensorboard import SummaryWriter
+
     base_path = cfg.data.data_dir
+    best_auroc = 0.0
+    best_loss = 1e6
+    epoch = 0
 
     # Hook function to capture the output
     def hook_fn(module, input, output):
@@ -161,13 +186,13 @@ def main(cfg):
         layer = list(model.model.children())[layer_index]
         layer.register_forward_hook(hook_fn)
 
-    custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset.yaml"
+    custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
     version = "yolov8x.pt"
     args = {
-        "model": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
+        "model": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
         "imgsz": [1024, 1024],
         "task": "detect",
-        "data": "/mnt/aix22301/onj/code/data/yolo_dataset.yaml",
+        "data": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
         "mode": "train",
         "model": f"{version}",
         "device": f"{Config.gpu}",
@@ -186,7 +211,7 @@ def main(cfg):
     train_loader = trainer.train_loader
     train_dataset = train_loader.dataset
 
-    test_loader = trainer.test_loader
+    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
     test_dataset = test_loader.dataset
 
     optimizer = trainer.optimizer
@@ -194,81 +219,178 @@ def main(cfg):
     pbar = enumerate(train_loader)
 
     nb = len(train_loader)
-    nw = max(round(trainer.args.warmup_epochs * nb), 100) if trainer.args.warmup_epochs > 0 else -1  # warmup iterations
 
-    raw_model = trainer.model  # ultralytics.nn.tasks.DetectionModel
-    register_hook(raw_model, 8)
+    max_lr = Config.lr
+    min_lr = Config.lr * 0.1
+    warmup_steps = Config.epochs * nb // 10
+    max_steps = Config.epochs * nb
 
-    model = FusionModel(cfg, Config, next(iter(train_loader)), trainer, ct_backbone=None, yolo=raw_model)
+    def get_lr(it):
+        # 1) linear warmup for warmup_iters steps
+        if it < warmup_steps:
+            return max_lr * (it + 1) / warmup_steps
+        # 2) if it > lr_decay_iters, return min learning rate
+        if it > max_steps:
+            return min_lr
+        # 3) in between, use cosine decay down to min learning rate
+        decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
+        return min_lr + coeff * (max_lr - min_lr)
+
+    model = TransformerModel(cfg, Config, next(iter(train_loader)))
     # use AdamW optimizer with cosine annealing
     # add classifier, raw_model, fusor, feature_expand, proj parameters
     optimizer = torch.optim.AdamW(
         [{"params": model.parameters()}],  # put raw_model inside the model
         lr=Config.lr,
     )
+    criterion = torch.nn.BCEWithLogitsLoss()
 
-    # cosine annealing
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=nb * Config.epochs, eta_min=3e-4)
+    # Convert Config to a dictionary
+    config_instance = Config()
+    config_dict = asdict(config_instance)
 
-    # Set log_file
-    log_dir = f"log/log_time_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_lr_{Config.lr}_batch_{Config.batch}_epochs_{Config.epochs}_lambda1_{Config.lambda1}_lambda2_{Config.lambda2}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+    # Generate the log_dir by joining key-value pairs in config_dict
+    log_dir = "log/{}_{}".format(
+        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+        "_".join(f"{key}_{value}" for key, value in config_dict.items()),
+    )
+
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"log.txt")
-    with open(log_file, "w") as f:
-        pass
+    logger = Logger(os.path.join(log_dir, "log.txt"), dataset_yaml)
+    writer = SummaryWriter(f"{log_dir}/tensorboard")
 
     max_full_batch = (
         len(train_loader) // Config.grad_accum_steps
     )  # calculate how many times one epoch should repeat the batch
+
     last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
 
-    for epoch in range(Config.epochs):
+    # ================================================================
+    #                     Resume from checkpoint
+    # ================================================================
+    if Config.resume:
+        # logger.resume(Config.resume)
+
+        # Load checkpoint to CPU
+        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
+
+        # Load model state
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Move model to the correct device
+        model.to(trainer.device)
+
+        # Load optimizer state
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Move optimizer state to the correct device
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(trainer.device)
+
+        best_auroc = checkpoint["best_auroc"]
+        best_loss = checkpoint["best_loss"]
+        epoch = checkpoint["epoch"]
+
+    # for gradient flow debugging
+    def print_grad(name):
+        def hook(grad):
+            if grad.sum() == 0:
+                print(f"Gradient for {name} = 0")
+            else:
+                print(f"Gradient for {name} = {torch.sqrt((grad*grad)).mean()}")
+
+        return hook
+
+    # NOTE: (DEBUG) comment/uncomment below to show/hide gradient flow
+    if Config.debug:
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.register_hook(print_grad(name))
+
+    # ================================================================
+    #                     Training loop
+    # ================================================================
+
+    # # # initialize model parameters using Xavier initialization
+    # for n, p in model.named_parameters():
+    #     # only initialize fully connected layers
+    #     if len(p.shape) > 1:
+    #         nn.init.xavier_uniform_(p)
+    i = 0
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            i += 1
+            nn.init.xavier_uniform_(m.weight)
+
+    # print(f"Initialized {i} linear layers")
+
+    while epoch <= Config.epochs:
+        epoch += 1
         pbar = iter(enumerate(train_loader))
         # change model to train mode
         model.train()
         model.to(trainer.device)
 
         for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
+            # NOTE: comment/uncomment below to block/pass training code
+            # continue
             loss_accum = 0.0
+            preds = []
             for micro_steps in range(Config.grad_accum_steps):
                 try:
                     i, data = next(pbar)
                 except:
                     break  # should break to next epoch since j is already at the last batch
 
-                with torch.cuda.amp.autocast(trainer.amp):
+                patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
+                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+                if Config.debug:
+                    print(patient_id)
 
+                if idx.empty:
+                    print(f"{patient_id} has no clinical information")
+                    continue
+
+                else:
+                    clinical_data = data_x.iloc[idx.index[0]]
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+
+                with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
                     data = preprocess_data(base_path, data)  # adds CT data and unify the data device
                     if data is None:  # case when only PA exist
+                        print("No data")
                         continue
 
                     # Forward pass
-                    data["img"] = model(data["CT_image"], data["img"])
+                    pred = model(data["CT_image"], data["img"], clinical_data)
 
-                    det_loss, _ = raw_model.loss(data)
-                    preds = model.classifier(feature_map)
-
-                    data["onj_cls"] = torch.tensor(
-                        data["onj_cls"], dtype=torch.int64, device=trainer.device
-                    )  # HACK: to avoid error
-
-                    cls_loss = F.cross_entropy(
-                        preds,
-                        F.one_hot(data["onj_cls"], num_classes=2).view(1, -1).float(),
-                        reduction="mean",
-                    )
+                    preds.append(round(F.sigmoid(pred.detach()).item(), 4))
+                    # binary cross entropy loss
+                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+                    cls_loss = criterion(pred, onj_cls)
 
                     # Backward pass
                     if i >= (len(train_loader) - last_accum_step):
-                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / last_accum_step
+                        loss = (cls_loss) / last_accum_step
                     else:
-                        loss = (Config.lambda1 * det_loss + Config.lambda2 * cls_loss) / Config.grad_accum_steps
+                        loss = (cls_loss) / Config.grad_accum_steps  # mean loss
 
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10000)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10000)
+
+            # log the gradients and parameter values to tensorboard to check the training process
+            try:
+                writer.add_histogram("gradients", norm, epoch * nb + i)
+            except:
+                pass
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -279,36 +401,126 @@ def main(cfg):
                         else:
                             print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
-            # Inside the training loop
-            check_gradients(model.named_parameters())
+            # print(f"----------------  gradients  -------------------------")
+            # check gradients for the first batch
+            # if j == 0:
+            #     check_gradients(model.named_parameters())
+            # print(f"------------------------------------------------------")
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+            lr = get_lr((epoch * nb) + i)
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+
             optimizer.step()
             optimizer.zero_grad()
-            scheduler.step()
 
-            with torch.no_grad():
-                # preds = F.softmax(preds, dim=1)
-                # pred = preds.argmax(dim=1).int().item()
-                # mark = (pred == data["onj_cls"]).int().item()
-                # log_message = (
-                #     f"Epoch: {epoch}, Step {(epoch*nb)+i+1}, Loss: {loss_accum.item():.4f}, Mark: {mark}, Pred: {pred}"
-                # )
-                log_message = f"epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f}"
-                print(log_message)
+            log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
 
-                # with open(log_file, "a") as f:
-                #     f.write(
-                #         f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} mark {mark} pred {pred} lr {scheduler.get_last_lr()}\n"
-                #     )
+            # if norm is nan or inf, print the log message and break the loop
+            if torch.isnan(norm) or torch.isinf(norm):
+                print("Norm is nan or inf")
 
-                with open(log_file, "a") as f:
-                    f.write(
-                        f"{(epoch*nb)+i+1} train {loss_accum.item():.4f} norm {norm:.4f} lr {scheduler.get_last_lr()[0]}\n"
-                    )
+            print(log_message)
+            print(preds)
 
-    model.eval()
+            logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
+
+        # ================================================================
+        #                     Training loop
+        # ================================================================
+        # test the model with validation set
+        with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
+            model.eval()
+            loss_accum = 0.0
+            targets = []
+            preds = []
+
+            for k, data in enumerate(test_loader):
+                data = trainer.preprocess_batch(data)
+                proc_data = preprocess_data(base_path, data)
+
+                patient_id = data["im_file"].split("/")[-1].split(".")[-2]
+                idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+
+                if idx.empty:
+                    print(f"{patient_id} has no clinical information")
+                    continue
+
+                else:
+                    clinical_data = data_x.iloc[idx.index[0]]
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+
+                if proc_data is None:
+                    print("No data: " + data["im_file"])
+                    continue
+
+                pred = model(proc_data["CT_image"], proc_data["img"], clinical_data)
+                preds.append(round(F.sigmoid(pred.detach()).item(), 4))
+
+                # binary cross entropy loss
+                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+                targets.append(onj_cls.item())
+
+                cls_loss = criterion(pred, onj_cls)
+
+                loss_accum += cls_loss.detach()
+
+            loss_accum /= len(test_loader)
+
+            print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
+
+            logger.log(
+                f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
+            )
+
+            # ================================================================
+            #                     Save the best model
+            # ================================================================
+            if best_loss > loss_accum.item():
+                best_loss = loss_accum.item()
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_auroc": best_auroc,
+                        "best_loss": best_loss,
+                    },
+                    f"{log_dir}/best_loss.pth",
+                )
+                print(f"best_loss: {best_loss} saved")
+
+            if best_auroc < roc_auc_score(y_true=targets, y_score=preds):
+                best_auroc = roc_auc_score(y_true=targets, y_score=preds)
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "best_auroc": best_auroc,
+                        "best_loss": best_loss,
+                    },
+                    f"{log_dir}/best_auroc.pth",
+                )
+                print(f"best_auroc: {best_auroc} saved")
+
+            # save the last model for the last epoch
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "best_auroc": best_auroc,
+                    "best_loss": best_loss,
+                },
+                f"{log_dir}/last.pth",
+            )
 
 
 if __name__ == "__main__":
     main()
+
+
+# cv2.imwrite("PA_image.jpg", (data["img"]*255).squeeze().permute(1,2,0).detach().cpu().float().numpy())
+# cv2.imwrite("CT_image.jpg", (data["CT_image"]*255).squeeze()[:,:,32].detach().cpu().float().numpy())")

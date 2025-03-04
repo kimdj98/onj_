@@ -3,6 +3,7 @@ import sys
 import math
 from datetime import datetime
 import pandas as pd
+import argparse
 import matplotlib.pyplot as plt
 
 sys.path.append("/mnt/aix22301/onj/code/")
@@ -21,16 +22,16 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from einops import rearrange
 from model5.modules.utils import preprocess_data
-from model5.modules.backbone import ResNet18_2D
+from model5.modules.backbone import ResNet18_2D, resnet3d18
 from model5.modules.transformer import (
     Transformer,
     PatchEmbed3D,
     PatchEmbed2D,
 )
-from model5.modules.clinical_model import * # includes parameters and data path for clinical model
+
+from model5.modules.clinical_model_backup import *  # includes parameters and data path for clinical model
 from model5.modules.post_processor import ImageFeatureExtractor, Classifier
 from sklearn.metrics import roc_auc_score
-from logger import Logger
 from ultralytics import YOLO
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
@@ -45,131 +46,9 @@ args = {
 }
 
 
-@dataclass
-class Config:
-    n_embed: int = 512
-    n_head: int = 8
-    n_class: int = 1
-    n_layer: int = 2
-    n_patch3d: tuple = (16, 16, 8)
-    n_patch2d: tuple = (64, 64)
-    width_2d: int = 1024
-    width_3d: int = 512
-    gpu: int = 0
-    lambda1: float = 0.0  # det loss weight
-    lambda2: float = 1.0  # cls loss weight
-    epochs: int = 200
-    lr: float = 1e-5
-    batch: int = 1
-    grad_accum_steps: int = 16 // batch
-    eps: float = 1e-6
-    # resume: str = None  # set resume to None or path string
-    resume: str = ("/mnt/aix22301/onj/log/2025-01-20_16-49-48_n_embed_512_n_head_8_n_class_1_n_layer_2_n_patch3d_(16, 16, 8)_n_patch2d_(64, 64)_width_2d_1024_width_3d_512_gpu_7_lambda1_0.0_lambda2_1.0_epochs_200_lr_1e-05_batch_1_grad_accum_steps_16_eps_1e-06_resume_None/last.pth")
-
 clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
 
-class TransformerModel(nn.Module):
-    def __init__(
-        self,
-        hydra_config: DictConfig,  # hydra config
-        model_config: Config,  # model config
-        data_example: dict,  # for model configuration depending on the data size and etc
-    ):
-        super(TransformerModel, self).__init__()
-        self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(
-            patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed
-        )
-        self.patch_embed2d = PatchEmbed2D(
-            patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed
-        )
-
-        # self.common_embed_dim = model_config.common_embed_dim
-        # CNN Feature Extractors
-        # 2D CNN for 2D images
-        self.cnn2d = ResNet18_2D()
-
-        # 3D CNN for 3D images
-        self.cnn3d = nn.Sequential(
-            # Initial convolutional layer
-            nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            # Additional convolutional blocks with downsampling
-            self._conv_block_3d(64, 128, downsample=True),
-            self._conv_block_3d(128, 256, downsample=True),
-            self._conv_block_3d(256, 512, downsample=True),
-            # self._conv_block_3d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
-        )
-
-        # B, _, H, W, D = data["CT_image"].shape
-        dummy_input3d = torch.zeros(
-            1, 1, model_config.width_3d, model_config.width_3d, 64
-        )
-        seq_len_x = (
-            self.cnn3d(dummy_input3d).shape[2]
-            * self.cnn3d(dummy_input3d).shape[3]
-            * self.cnn3d(dummy_input3d).shape[4]
-        )
-
-        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
-        seq_len_y = (
-            self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
-        )
-
-        self.pe_x = nn.Parameter(
-            torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
-        )  # TODO: change 512 to model_config parameter
-        self.pe_y = nn.Parameter(
-            torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
-        )  # TODO: change 512 to model_config parameter
-
-        self.transformer = Transformer(
-            n_layer=Config.n_layer,
-            seq_len_x=seq_len_x,
-            seq_len_y=seq_len_y,
-            dim=model_config.n_embed,
-            qk_scale=1.0,
-        )
-        self.clinical_model = clinical_model
-
-        self.image_feature_extractor = ImageFeatureExtractor(
-            model_config.n_embed, seq_len_y, model_config.n_embed * 4
-        )
-        self.classifier = Classifier(
-            seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class
-        )
-
-    def _conv_block_3d(self, in_channels, out_channels, downsample=False):
-        stride = 2 if downsample else 1
-        layers = [
-            nn.Conv3d(
-                in_channels, out_channels, kernel_size=3, stride=stride, padding=1
-            ),
-            nn.ReLU(),
-        ]
-        return nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
-        feature_x = self.cnn3d(x)
-        feature_y = self.cnn2d(y)
-
-        feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
-        feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
-
-        feature_x2 = feature_x1 + self.pe_x
-        feature_y2 = feature_y1 + self.pe_y
-
-        x1, y1 = self.transformer((feature_x2, feature_y2))
-
-        z1 = self.clinical_model(z)
-
-        y2 = self.image_feature_extractor(y1)
-
-        # concat the features y2([1, 4096]) and z1([225])
-        z1 = z1.unsqueeze(0)
-        concat_feature = torch.cat((y2, z1), dim=1)
-        out = self.classifier(concat_feature)
-        return out
+from model5.SOTA_log_script import TransformerModel, Config
 
 def normalize_heatmap(heatmap):
     """Normalize a heatmap to the range [0, 1]."""
@@ -201,8 +80,6 @@ def overlay_heatmaps_and_image(heatmaps, original_image, alpha=0.6):
     overlay = (1 - alpha) * original_image_np + alpha * combined_heatmap
 
     return overlay
-
-
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -312,11 +189,17 @@ def main(cfg):
     # test the model with validation set
     model.eval()
 
-    target_layers = [model.cnn2d.layer4[1].conv1,
-                     model.cnn2d.layer4[1].conv2]
+    target_layers = [
+        # model.cnn2d.layer3[1].conv2,
+        # model.cnn2d.layer4[0].conv1,
+        # model.cnn2d.layer4[0].conv2,
+        # model.cnn2d.layer4[1].conv1, 
+        model.cnn2d.layer4[1].conv2,
+        ]
+
 
     for k, data in enumerate(test_loader):
-        if k == 14:
+        if k == 30:
             break
         # Define hooks to capture the activation maps and gradients
         activations = list()
@@ -365,9 +248,10 @@ def main(cfg):
         
         pred = F.sigmoid(pred)
 
-        print(f"Probability for {patient_id}:               {pred.item():.4f}")
-        print(f"Probability without image for {patient_id}: {F.sigmoid(pred_wo_img).item():.4f}")
-        print(f"Image contribution for {patient_id}:        {(pred - F.sigmoid(pred_wo_img)).item():.4f}")
+        print(f"Probability w/ image for {patient_id}: {pred.item():.4f}")
+        print(f"Probability wo image for {patient_id}: {F.sigmoid(pred_wo_img).item():.4f}")
+        print(f"Image contribution for {patient_id}       : {(pred - F.sigmoid(pred_wo_img)).item():.4f}")
+        print(f"Image contribution for {patient_id}(logit): {(torch.log(pred/(1-pred)) - pred_wo_img).item():.4f}")
 
         model.zero_grad()
         pred.backward()
@@ -379,7 +263,7 @@ def main(cfg):
 
         heatmaps = list()
         for activation, grad_map in zip(activations, gradients):
-
+            grad_map = grad_map.squeeze(0)  # shape [C, H, W]
             activation_map = activation.squeeze(0).detach().cpu()  # shape [C, H, W]
             grad_map = grad_map.detach().cpu()  # shape [C, H, W]
 
@@ -394,10 +278,13 @@ def main(cfg):
             cam = F.relu(cam)
 
             # Normalize the CAM
-            cam = (cam) / (0.50 + 1e-8)
-
-            # clip if cam is larger than 1
-            cam = torch.clamp(cam, 0, 1)
+            cam[:,:cam.size(1)//6]=0
+            cam[:,-cam.size(1)//6:]=0
+            
+            cam[:cam.size(0)//4,:] = 0
+            cam[-cam.size(0)//4:,:] = 0
+            
+            cam = (cam - cam.min()) / (cam.max() + 1e-8)
 
             cam_4d = cam.unsqueeze(0).unsqueeze(0)
             cam_resized = F.interpolate(cam_4d, size=(1024, 1024), mode="bilinear", align_corners=False)
@@ -410,7 +297,7 @@ def main(cfg):
         original_image = data["img"].squeeze(0)
 
         overlay = overlay_heatmaps_and_image(heatmaps, original_image, alpha=0.6)
-        plt.imsave(f"heatmap_{patient_id}_last_layer4.png", overlay)
+        plt.imsave(f"heatmap_SOTA_{patient_id}_last_layer4.png", overlay)
         print(f"Saved heatmap for {patient_id}")
 
 if __name__ == "__main__":

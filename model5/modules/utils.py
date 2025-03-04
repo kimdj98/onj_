@@ -22,6 +22,9 @@ from monai.transforms import (
     RandFlipd,
     RandGaussianNoised,
     Transposed,
+    RandStdShiftIntensityd,
+    RandScaleIntensityd,
+    RandZoomd,
 )
 
 # configuration for the data
@@ -41,6 +44,18 @@ transforms = Compose(
         Flipd(keys=["CT_image"], spatial_axis=2),
         SelectSliced(keys=["CT_image", "CT_SOI"]),
         Resized(keys=["CT_image"], spatial_size=(CT_DIM_X, CT_DIM_Y, 64), mode="trilinear"),
+        RandFlipd(keys=["CT_image"], spatial_axis=2, prob=0.5),
+        RandAffined(
+            keys=["CT_image"],
+            prob=0.5,  # Probability of applying the transformation
+            translate_range=(10, 10, 4),  # Random shift range in mm/voxels (x, y, z)
+            mode="bilinear",  # Interpolation mode
+            padding_mode="zeros",  # Padding mode to handle edge cases
+        ),
+        # RandFlipd(keys=["CT_image"], spatial_axis=[1], prob=0.5), # e.g. flip along Y
+        # RandStdShiftIntensityd(keys=["CT_image"], factors=0.1, prob=0.5),  # +/- factor * std
+        # RandScaleIntensityd(keys=["CT_image"], factors=(0.9, 1.1), prob=0.5),  # scale range
+        # RandZoomd(keys=["CT_image"], min_zoom=0.9, max_zoom=1.1, mode="trilinear", prob=0.5),
         ToTensord(keys=["CT_image"]),
     ]
 )

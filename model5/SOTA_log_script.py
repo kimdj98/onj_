@@ -3,6 +3,7 @@ import sys
 import math
 from datetime import datetime
 import pandas as pd
+import argparse
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
@@ -19,13 +20,16 @@ import torch.nn.functional as F
 
 from omegaconf import DictConfig
 from einops import rearrange
-from modules.utils import preprocess_data
+from model5.modules.utils import preprocess_data
+from model5.modules.backbone import ResNet18_2D, resnet3d18
+from model5.modules.transformer import (
+    Transformer,
+    PatchEmbed3D,
+    PatchEmbed2D,
+)
 
-# from modules.backbone import ResNet18_2D, resnet3d18
-# from modules.transformer import Transformer, PatchEmbed3D, PatchEmbed2D, TransformerModel
-from modules.transformer import TransformerModel
-from modules.clinical_model import *  # includes parameters and data path for clinical model
-from modules.post_processor import ImageFeatureExtractor, Classifier
+from model5.modules.clinical_model_backup import *  # includes parameters and data path for clinical model
+from model5.modules.post_processor import ImageFeatureExtractor, Classifier
 from sklearn.metrics import roc_auc_score
 from logger import Logger
 from ultralytics import YOLO
@@ -44,23 +48,24 @@ args = {
 
 @dataclass
 class Config:
-    n_embed: int = 256
+    debug: bool = False
+    n_embed: int = 512
     n_head: int = 8
     n_class: int = 1
     n_layer: int = 2
-    # n_patch3d: tuple = (16, 16, 8)
-    # n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 7
+    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
-    lambda2: float = 1.0  # cls loss weight
-    epochs: int = 200
-    lr: float = 1e-4
+    lambda2: float = 1.0  #  cls loss weight
+    epochs: int = 100
+    lr: float = 1e-6
     batch: int = 1
     grad_accum_steps: int = 16 // batch
+    grad_clip: int = 100
+    grad_threshold: int = 150
     eps: float = 1e-6
-    resume: str = None  # set resume to None or path string
+    resume: str = "/mnt/aix22301/onj/log/2025-02-14_23-40-56_debug_False_n_embed_512_n_head_8_n_class_1_n_layer_2_width_2d_1024_width_3d_512_gpu_7_lambda1_0.0_lambda2_1.0_epochs_100_lr_1e-06_batch_1_grad_accum_steps_16_grad_clip_100_grad_threshold_150_eps_1e-06_resume_None/best_auroc.pth"  # set resume to None or path string
 
     # resume: str = (
     #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
@@ -68,6 +73,117 @@ class Config:
 
 
 clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
+
+
+class TransformerModel(nn.Module):
+    def __init__(
+        self,
+        hydra_config: DictConfig,  # hydra config
+        model_config: Config,  # model config
+        data_example: dict,  # for model configuration depending on the data size and etc
+    ):
+        super(TransformerModel, self).__init__()
+        self.base_path = hydra_config.data.data_dir
+
+        # to configure the data size and types
+        data = preprocess_data(self.base_path, data_example)
+
+        # self.common_embed_dim = model_config.common_embed_dim
+        # CNN Feature Extractors
+        # 2D CNN for 2D images
+        self.cnn2d = ResNet18_2D()
+
+        # 3D CNN for 3D images
+        self.cnn3d = resnet3d18()
+
+        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
+        seq_len_y = self.cnn2d(dummy_input2d)[1].shape[2] * self.cnn2d(dummy_input2d)[1].shape[3]
+
+        # B, _, H, W, D = data["CT_image"].shape
+        dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
+        dummy_output3d = self.cnn3d(dummy_input3d)[1]
+        seq_len_x = dummy_output3d.shape[2] * dummy_output3d.shape[3] * dummy_output3d.shape[4]
+
+        self.pe_x = nn.Parameter(
+            torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+        self.pe_y = nn.Parameter(
+            torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
+        )  # TODO: change 512 to model_config parameter
+
+        self.transformer = Transformer(
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_x,
+            seq_len_y=seq_len_y,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+        self.transformer_reverse = Transformer(
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_y,
+            seq_len_y=seq_len_x,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+        self.clinical_model = clinical_model
+
+        # feature transformation using 1d cnn
+        self.PA_embedding = nn.Sequential(
+            *[
+                nn.Conv2d(model_config.n_embed, model_config.n_embed * 4, 1),
+                nn.ReLU(),
+                nn.Conv2d(model_config.n_embed * 4, model_config.n_embed, 1),
+            ]
+        )
+        self.CT_embedding = nn.Sequential(
+            *[
+                nn.Conv3d(model_config.n_embed, model_config.n_embed * 4, 1),
+                nn.ReLU(),
+                nn.Conv3d(model_config.n_embed * 4, model_config.n_embed, 1),
+            ]
+        )
+
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.CT_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_x, model_config.n_embed * 4)
+        self.classifier = Classifier(
+            seq_len_y + seq_len_x + clinical_model.HPARAMS["u2"], hidden_dim=512, n_class=model_config.n_class
+        )
+
+    def _conv_block_3d(self, in_channels, out_channels, downsample=False):
+        stride = 2 if downsample else 1
+        layers = [
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
+            nn.ReLU(),
+        ]
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
+        feature_x = self.cnn3d(x)[1]
+        feature_y = self.cnn2d(y)[1]
+
+        feature_x = self.CT_embedding(feature_x)
+        feature_y = self.PA_embedding(feature_y)
+
+        feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
+        feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
+
+        feature_x2 = feature_x1 + self.pe_x
+        feature_y2 = feature_y1 + self.pe_y
+
+        _, y1 = self.transformer((feature_x2, feature_y2))
+
+        _, x1 = self.transformer_reverse((feature_y2, feature_x2))
+
+        z1 = self.clinical_model(z)[1]
+
+        y2 = self.image_feature_extractor(y1)
+        x2 = self.CT_feature_extractor(x1)
+
+        # concat the features y2([1, 4096]) and z1([225])
+        z1 = z1.unsqueeze(0)
+        concat_feature = torch.cat((y2, x2, z1), dim=1)
+        out = self.classifier(concat_feature)
+        return out
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -143,7 +259,7 @@ def main(cfg):
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
 
-    model = TransformerModel(cfg, Config, clinical_model, next(iter(train_loader)))
+    model = TransformerModel(cfg, Config, next(iter(train_loader)))
     # use AdamW optimizer with cosine annealing
     # add classifier, raw_model, fusor, feature_expand, proj parameters
     optimizer = torch.optim.AdamW(
@@ -163,7 +279,7 @@ def main(cfg):
     )
 
     os.makedirs(log_dir, exist_ok=True)
-    logger = Logger(os.path.join(log_dir, "log.txt"), dataset_yaml)
+    logger = Logger(os.path.join(log_dir, "log.txt"), dataset_yaml, __file__)
     writer = SummaryWriter(f"{log_dir}/tensorboard")
 
     max_full_batch = (
@@ -206,18 +322,32 @@ def main(cfg):
             if grad.sum() == 0:
                 print(f"Gradient for {name} = 0")
             else:
-                print(f"Gradient for {name} = {grad.abs().mean()}")
+                print(f"Gradient for {name} = {torch.sqrt((grad*grad)).mean()}")
 
         return hook
 
     # NOTE: (DEBUG) comment/uncomment below to show/hide gradient flow
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(print_grad(name))
+    if Config.debug:
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.register_hook(print_grad(name))
 
     # ================================================================
     #                     Training loop
     # ================================================================
+
+    # # # initialize model parameters using Xavier initialization
+    # for n, p in model.named_parameters():
+    #     # only initialize fully connected layers
+    #     if len(p.shape) > 1:
+    #         nn.init.xavier_uniform_(p)
+    i = 0
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            i += 1
+            nn.init.xavier_uniform_(m.weight)
+
+    # print(f"Initialized {i} linear layers")
 
     while epoch <= Config.epochs:
         epoch += 1
@@ -231,6 +361,7 @@ def main(cfg):
             # continue
             loss_accum = 0.0
             preds = []
+            norm = 0
             for micro_steps in range(Config.grad_accum_steps):
                 try:
                     i, data = next(pbar)
@@ -239,6 +370,8 @@ def main(cfg):
 
                 patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
                 idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+                if Config.debug:
+                    print(patient_id)
 
                 if idx.empty:
                     print(f"{patient_id} has no clinical information")
@@ -272,10 +405,19 @@ def main(cfg):
                     loss_accum += loss.detach()
                     loss.backward()
 
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=Config.grad_clip)
 
+                if norm > Config.grad_threshold:
+                    logger.log_extra(f"spike occured in patient {patient_id} \n")
+
+                norm += norm
+
+            norm /= Config.grad_accum_steps
             # log the gradients and parameter values to tensorboard to check the training process
-            writer.add_histogram("gradients", norm, epoch * nb + i)
+            try:
+                writer.add_histogram("gradients", norm, epoch * nb + i)
+            except:
+                pass
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -301,6 +443,11 @@ def main(cfg):
             optimizer.zero_grad()
 
             log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
+
+            # if norm is nan or inf, print the log message and break the loop
+            if torch.isnan(norm) or torch.isinf(norm):
+                print("Norm is nan or inf")
+
             print(log_message)
             print(preds)
 
@@ -348,10 +495,8 @@ def main(cfg):
 
             loss_accum /= len(test_loader)
 
-            try:
-                print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
-            except:
-                pass
+            print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
+
             logger.log(
                 f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
             )
@@ -402,3 +547,7 @@ def main(cfg):
 
 if __name__ == "__main__":
     main()
+
+
+# cv2.imwrite("PA_image.jpg", (data["img"]*255).squeeze().permute(1,2,0).detach().cpu().float().numpy())
+# cv2.imwrite("CT_image.jpg", (data["CT_image"]*255).squeeze()[:,:,32].detach().cpu().float().numpy())")

@@ -2,8 +2,8 @@ import os
 import sys
 import math
 from datetime import datetime
-import copy
 import pandas as pd
+import argparse
 
 sys.path.append("/mnt/aix22301/onj/code/")
 
@@ -13,31 +13,25 @@ from dataclasses import asdict
 
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
 
 nn.Conv1d
 from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
-import ultralytics
-from ultralytics.nn.modules.head import Classify, Detect  # add classify to layer number 8
-from ultralytics.utils.loss import v8DetectionLoss, v8ClassificationLoss
-from ultralytics.models.yolo.detect import DetectionTrainer
-from ultralytics.nn.tasks import DetectionModel
-
 from omegaconf import DictConfig
 from einops import rearrange
-from model3_feat.modules.utils import preprocess_data
-from model3_feat.modules.transformer import (
-    Transformer,
-    PatchEmbed3D,
-    PatchEmbed2D,
-)  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from model5.modules.utils import preprocess_data
+from model5.modules.backbone import ResNet18_2D, resnet3d18
+from model5.modules.transformer import Transformer
+from model5.modules.clinical_model import *  # includes parameters and data path for clinical model
+from model5.modules.post_processor import ImageFeatureExtractor, Classifier
 from sklearn.metrics import roc_auc_score
+from logger import Logger
+from ultralytics import YOLO
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
-
 version = "yolov8n"
-
 args = {
     "task": "detect",
     "data": dataset_yaml,
@@ -47,186 +41,34 @@ args = {
     "mode": "train",
 }
 
-import logging
-import time
-import hydra
-import torch
-from torch.utils.data.dataset import ConcatDataset
-
-from ultralytics import YOLO
-from ultralytics.utils import (
-    ARGV,
-    ASSETS,
-    DEFAULT_CFG_DICT,
-    LOGGER,
-    RANK,
-    TQDM,
-    SETTINGS,
-    callbacks,
-    checks,
-    emojis,
-    yaml_load,
-)
-
-
-class Logger:
-    # NOTE: do not move this file into other folder for refactoring for example utils.py or etc.
-    def __init__(self, log_file):
-        self.log_file = log_file
-        self.log_script_file = log_file.replace("log.txt", "log_script.py")
-        self.log_data_file = log_file.replace("log.txt", "log_data.txt")
-        with open(log_file, "w") as f:
-            pass
-        with open(self.log_script_file, "w") as f:
-            pass
-        with open(self.log_data_file, "w") as f:
-            pass
-
-        self.log_script()
-        self.log_data()
-
-        self.step = 0
-
-    def log(self, message):
-        self.step += 1
-        with open(self.log_file, "a") as f:
-            f.write(f"{self.step} " + message)
-
-    def log_script(self):
-        # Open current file and log every lines of code inside the file
-        with open(__file__, "r") as f:
-            lines = f.readlines()
-
-        with open(self.log_script_file, "a") as f2:
-            f2.writelines(lines)
-
-    def log_data(self):
-        with open(dataset_yaml, "r") as f:
-            lines = f.readlines()
-
-        with open(self.log_data_file, "a") as f:
-            f.writelines(lines)
-
-    def resume(self, resume_file):  # NOT USED
-        # Open the existing log file to read its content
-        with open("/".join(resume_file.split("/")[:-1]) + "/log.txt", "r") as f:
-            lines = f.readlines()  # Read all lines
-
-        # Write the content to the new log file
-        with open(self.log_file, "w") as f2:
-            f2.writelines(lines)
-
-        # Get the last step number from the lines read
-        if lines:
-            self.step = int(lines[-1].split(" ")[0])
-
 
 @dataclass
 class Config:
-    n_embed: int = 512
+    gpu: int = 6
+    n_embed: int = 256
+    n_layer: int = 2
+    expansion: int = 4
+    lr: float = 3e-5
+    debug: bool = False
     n_head: int = 8
     n_class: int = 1
-    n_layer: int = 2
-    n_patch3d: tuple = (16, 16, 8)
-    n_patch2d: tuple = (64, 64)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 6
     lambda1: float = 0.0  # det loss weight
-    lambda2: float = 1.0  # cls loss weight
-    epochs: int = 200
-    lr: float = 1e-5
+    lambda2: float = 1.0  #  cls loss weight
+    epochs: int = 100
     batch: int = 1
     grad_accum_steps: int = 16 // batch
+    grad_clip: int = 10000
+    grad_threshold: int = 60
     eps: float = 1e-6
-    resume: str = None  # set resume to None or path string
+    resume: str = "/mnt/aix22301/onj/log/2025-02-25_22-24-50_gpu_3_n_embed_256_n_layer_2_expansion_4_lr_3e-05_debug_False_n_head_8_n_class_1_width_2d_1024_width_3d_512_lambda1_0.0_lambda2_1.0_epochs_100_batch_1_grad_accum_steps_16_grad_clip_10000_grad_threshold_60_eps_1e-06_resume_None/last.pth"  # set resume to None or path string
+
     # resume: str = (
     #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
     # )
 
-
-class ClinicalModel(nn.Module):
-    def __init__(self, HPARAMS):
-        super(ClinicalModel, self).__init__()
-        self.HPARAMS = HPARAMS
-        self.fc1 = nn.Linear(HPARAMS["input_dim"], HPARAMS["u1"])  # units1
-        self.dropout1 = nn.Dropout(p=HPARAMS["d1"])  # dropout1
-
-        self.fc2 = nn.Linear(HPARAMS["u1"], HPARAMS["u2"])  # units2
-        self.dropout2 = nn.Dropout(p=HPARAMS["d2"])  # dropout2
-
-        self.fc_final = nn.Linear(HPARAMS["u2"], 1)  # Final output layer
-
-        self.activation = nn.ReLU()  # ReLU activation as per original specification
-
-    def forward(self, x):
-        x = self.activation(self.fc1(x))
-        x = self.dropout1(x)
-
-        x = self.activation(self.fc2(x))
-        x = self.dropout2(x)
-
-        # x = torch.sigmoid(self.fc_final(x))
-        return x
-
-
-path = "/mnt/aix22301/onj/code/clinical"
-pt_CODE = pd.read_csv(path + "/pt_CODE.csv", index_col=0)
-data_x = pd.read_csv(path + "/data_X.csv", index_col=0)
-data_y = pd.read_csv(path + "/data_Y.csv", index_col=0)
-load_path = path + "/best_model2.pth"  ## model1 or model2
-
-HPARAMS = {
-    "input_dim": data_x.shape[1],
-    "u1": 410,
-    "u2": 225,
-    "d1": 0.362,
-    "d2": 0.333,
-    "load_path": load_path,
-}
-
-clinical_model = ClinicalModel(HPARAMS)
-# clinical_model.load_state_dict(torch.load(load_path))
-
-
-class ImageFeatureExtractor(nn.Module):
-    def __init__(self, dim: int, seq_len: int, hidden_dim: int):
-        super(ImageFeatureExtractor, self).__init__()
-        self.fc1 = nn.Linear(dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.fc3 = nn.Linear(seq_len, 1)
-        self.gelu = nn.GELU()
-
-    def forward(self, x: torch.Tensor):
-        x = self.fc1(x)
-        x = self.gelu(x)
-        x = self.fc2(x).squeeze(-1)
-        return x
-        # x = self.gelu(x)
-        # x = self.fc3(x)
-        # return x
-
-
-class Classifier(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int = 512, n_class: int = 1):
-        super(Classifier, self).__init__()
-        self.fc1 = nn.Linear(dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, n_class)
-        self.gelu = nn.GELU()
-
-    def forward(self, x: torch.Tensor):
-        x = self.fc1(x)
-        x = self.gelu(x)
-        x = self.fc2(x)
-        return x
-
-
-class CNN2D(nn.Module):
-    def __init__(self, in_channels, out_channels, downsample=False):
-        super(CNN2D, self).__init__()
-        stride = 2 if downsample else 1
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
-
+clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
 
 class TransformerModel(nn.Module):
     def __init__(
@@ -237,51 +79,26 @@ class TransformerModel(nn.Module):
     ):
         super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
-        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
 
         # to configure the data size and types
         data = preprocess_data(self.base_path, data_example)
 
         # self.common_embed_dim = model_config.common_embed_dim
+
         # CNN Feature Extractors
         # 2D CNN for 2D images
-        self.cnn2d = nn.Sequential(
-            # Initial convolutional layer
-            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            # Additional convolutional blocks with downsampling
-            self._conv_block_2d(64, 128, downsample=True),
-            self._conv_block_2d(128, 128, downsample=False),
-            # self._conv_block_2d(128, 128, downsample=False),
-            self._conv_block_2d(128, 256, downsample=True),
-            self._conv_block_2d(256, 256, downsample=False),
-            # self._conv_block_2d(256, 256, downsample=False),
-            self._conv_block_2d(256, 512, downsample=True),
-            self._conv_block_2d(512, 512, downsample=False),
-            # self._conv_block_2d(512, 512, downsample=False),  # TODO: remove this line if model is too small (optional)
-        )
-
+        self.cnn2d = ResNet18_2D()
         # 3D CNN for 3D images
-        self.cnn3d = nn.Sequential(
-            # Initial convolutional layer
-            nn.Conv3d(1, 64, kernel_size=7, stride=2, padding=3),
-            nn.ReLU(),
-            # Additional convolutional blocks with downsampling
-            self._conv_block_3d(64, 128, downsample=True),
-            self._conv_block_3d(128, 256, downsample=True),
-            self._conv_block_3d(256, 512, downsample=True),
-            # self._conv_block_3d(512, 512, downsample=True),  # TODO: remove this line if model is too small (optional)
-        )
+        self.cnn3d = resnet3d18()
+
+        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
+        dummy_output2d = self.cnn2d(dummy_input2d)[1]
+        seq_len_y = dummy_output2d.shape[2] * dummy_output2d.shape[3]
 
         # B, _, H, W, D = data["CT_image"].shape
         dummy_input3d = torch.zeros(1, 1, model_config.width_3d, model_config.width_3d, 64)
-        seq_len_x = (
-            self.cnn3d(dummy_input3d).shape[2] * self.cnn3d(dummy_input3d).shape[3] * self.cnn3d(dummy_input3d).shape[4]
-        )
-
-        dummy_input2d = torch.zeros(1, 3, model_config.width_2d, model_config.width_2d)
-        seq_len_y = self.cnn2d(dummy_input2d).shape[2] * self.cnn2d(dummy_input2d).shape[3]
+        dummy_output3d = self.cnn3d(dummy_input3d)[1]
+        seq_len_x = dummy_output3d.shape[2] * dummy_output3d.shape[3] * dummy_output3d.shape[4]
 
         self.pe_x = nn.Parameter(
             torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3
@@ -290,24 +107,44 @@ class TransformerModel(nn.Module):
             torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3
         )  # TODO: change 512 to model_config parameter
 
-        # self.proj3d = nn.Linear(model_config.common_embed_dim, model_config.n_embed)
-        # self.proj2d = nn.Linear(model_config.common_embed_dim, model_config.n_embed)
-
         self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_x,
+            seq_len_y=seq_len_y,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
         )
+        self.transformer_reverse = Transformer(
+            n_layer=Config.n_layer,
+            seq_len_x=seq_len_y,
+            seq_len_y=seq_len_x,
+            dim=model_config.n_embed,
+            qk_scale=1.0,
+        )
+
         self.clinical_model = clinical_model
 
-        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
-        self.classifier = Classifier(seq_len_y + clinical_model.HPARAMS["u2"], model_config.n_class)
+        # feature transformation using 1d cnn
+        self.PA_embedding = nn.Sequential(
+            *[
+                nn.Linear(model_config.n_embed, model_config.n_embed*model_config.expansion),
+                nn.ReLU(),
+                nn.Linear(model_config.n_embed*model_config.expansion, model_config.n_embed),
+            ]
+        )
+        self.CT_embedding = nn.Sequential(
+            *[
+                nn.Linear(model_config.n_embed, model_config.n_embed*model_config.expansion),
+                nn.ReLU(),
+                nn.Linear(model_config.n_embed*model_config.expansion, model_config.n_embed),
+            ]
+        )
 
-    def _conv_block_2d(self, in_channels, out_channels, downsample=False):
-        stride = 2 if downsample else 1
-        layers = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1),
-            nn.ReLU(),
-        ]
-        return nn.Sequential(*layers)
+        self.image_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
+        self.CT_feature_extractor = ImageFeatureExtractor(model_config.n_embed, seq_len_x, model_config.n_embed * 4)
+        self.classifier = Classifier(
+            seq_len_y + seq_len_x + clinical_model.HPARAMS["u2"], hidden_dim=512, n_class=model_config.n_class
+        )
 
     def _conv_block_3d(self, in_channels, out_channels, downsample=False):
         stride = 2 if downsample else 1
@@ -318,26 +155,34 @@ class TransformerModel(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor):
-        feature_x = self.cnn3d(x)
-        feature_y = self.cnn2d(y)
+        CT_out, feature_x = self.cnn3d(x)
+        PA_out, feature_y = self.cnn2d(y)
 
         feature_x1 = rearrange(feature_x, "B C H W D -> B (H W D) C")
         feature_y1 = rearrange(feature_y, "B C H W -> B (H W) C")
+        
+        feature_x1 = self.CT_embedding(feature_x1)
+        feature_y1 = self.PA_embedding(feature_y1)
 
         feature_x2 = feature_x1 + self.pe_x
         feature_y2 = feature_y1 + self.pe_y
 
-        x1, y1 = self.transformer((feature_x2, feature_y2))
+        _, y1 = self.transformer((feature_x2, feature_y2))
 
-        z1 = self.clinical_model(z)
+        _, x1 = self.transformer_reverse((feature_y2, feature_x2))
+
+        CLINICAL_out, z1 = self.clinical_model(z)
 
         y2 = self.image_feature_extractor(y1)
+        x2 = self.CT_feature_extractor(x1)
 
         # concat the features y2([1, 4096]) and z1([225])
-        z1 = z1.unsqueeze(0)
-        concat_feature = torch.cat((y2, z1), dim=1)
+        if z1.dim() == 1:
+            z1 = z1.unsqueeze(0)
+        
+        concat_feature = torch.cat((y2, x2, z1), dim=1)
         out = self.classifier(concat_feature)
-        return out
+        return out, CT_out, PA_out, CLINICAL_out
 
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
@@ -419,7 +264,9 @@ def main(cfg):
     optimizer = torch.optim.AdamW(
         [{"params": model.parameters()}],  # put raw_model inside the model
         lr=Config.lr,
+        # weight_decay=1,
     )
+    criterion = torch.nn.BCEWithLogitsLoss()
 
     # Convert Config to a dictionary
     config_instance = Config()
@@ -427,16 +274,18 @@ def main(cfg):
 
     # Generate the log_dir by joining key-value pairs in config_dict
     log_dir = "log/{}_{}".format(
-        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), "_".join(f"{key}_{value}" for key, value in config_dict.items())
+        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+        "_".join(f"{key}_{value}" for key, value in config_dict.items()),
     )
 
     os.makedirs(log_dir, exist_ok=True)
-    logger = Logger(os.path.join(log_dir, "log.txt"))
+    logger = Logger(os.path.join(log_dir, "log.txt"), dataset_yaml, __file__)
     writer = SummaryWriter(f"{log_dir}/tensorboard")
 
     max_full_batch = (
         len(train_loader) // Config.grad_accum_steps
     )  # calculate how many times one epoch should repeat the batch
+
     last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
 
     # ================================================================
@@ -473,16 +322,32 @@ def main(cfg):
             if grad.sum() == 0:
                 print(f"Gradient for {name} = 0")
             else:
-                print(f"Gradient for {name} = {grad.abs().mean()}")
+                print(f"Gradient for {name} = {torch.sqrt((grad*grad)).mean()}")
 
         return hook
 
-    # # DEBUG: Check gradients
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(print_grad(name))
+    # NOTE: (DEBUG) comment/uncomment below to show/hide gradient flow
+    if Config.debug:
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.register_hook(print_grad(name))
 
-    criterion = torch.nn.BCEWithLogitsLoss()
+    # ================================================================
+    #                     Training loop
+    # ================================================================
+
+    # # # initialize model parameters using Xavier initialization
+    # for n, p in model.named_parameters():
+    #     # only initialize fully connected layers
+    #     if len(p.shape) > 1:
+    #         nn.init.xavier_uniform_(p)
+    i = 0
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            i += 1
+            nn.init.xavier_uniform_(m.weight)
+
+    # print(f"Initialized {i} linear layers")
 
     while epoch <= Config.epochs:
         epoch += 1
@@ -494,8 +359,10 @@ def main(cfg):
         for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
             # NOTE: comment/uncomment below to block/pass training code
             # continue
-            loss_accum = 0.0
-            preds = []
+            loss_accum, loss_accum_CT, loss_accum_PA, loss_accum_CLINICAL = 0.0, 0.0, 0.0, 0.0
+            preds, preds_CT, preds_PA, preds_CLINICAL = list(), list(), list(), list()
+        
+            norm = 0
             for micro_steps in range(Config.grad_accum_steps):
                 try:
                     i, data = next(pbar)
@@ -504,6 +371,8 @@ def main(cfg):
 
                 patient_id = data["im_file"][0].split("/")[-1].split(".")[-2]
                 idx = pt_CODE[pt_CODE["pt_CODE"] == patient_id]
+                if Config.debug:
+                    print(patient_id)
 
                 if idx.empty:
                     print(f"{patient_id} has no clinical information")
@@ -511,7 +380,7 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device).unsqueeze(0)
 
                 with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
@@ -521,26 +390,66 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    pred = model(data["CT_image"], data["img"], clinical_data)
+                    pred, CT_pred, PA_pred, CLINICAL_pred = model(data["CT_image"], data["img"], clinical_data)
 
+                    # add the predictions to the list
                     preds.append(round(F.sigmoid(pred.detach()).item(), 4))
+                    preds_CT.append(round(F.sigmoid(CT_pred.detach()).item(), 4))
+                    preds_PA.append(round(F.sigmoid(PA_pred.detach()).item(), 4))
+                    preds_CLINICAL.append(round(F.sigmoid(CLINICAL_pred.detach()).item(), 4))
+                    
                     # binary cross entropy loss
                     onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
                     cls_loss = criterion(pred, onj_cls)
+                    cls_loss_CT = criterion(CT_pred, onj_cls)
+                    cls_loss_PA = criterion(PA_pred, onj_cls)
+                    cls_loss_CLINICAL = criterion(CLINICAL_pred, onj_cls)
 
-                    # Backward pass
-                    if i >= (len(train_loader) - last_accum_step):
-                        loss = (cls_loss) / last_accum_step
+                    if i <= (len(train_loader) - last_accum_step):
+                        accum_steps = Config.grad_accum_steps
                     else:
-                        loss = (cls_loss) / Config.grad_accum_steps  # mean loss
+                        accum_steps = last_accum_step
+                        continue
+                        
+                    # Backward pass
+                    loss = cls_loss / accum_steps
+                    loss_CT = cls_loss_CT / accum_steps
+                    loss_PA = cls_loss_PA / accum_steps
+                    loss_CLINICAL = cls_loss_CLINICAL / accum_steps
 
                     loss_accum += loss.detach()
-                    loss.backward()
-
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+                    loss_accum_CT += loss_CT.detach()
+                    loss_accum_PA += loss_PA.detach()
+                    loss_accum_CLINICAL += loss_CLINICAL.detach()
+                    
+                    loss_sum = 0.006*loss + 1*loss_CT + 2*loss_PA + 4*loss_CLINICAL
+                    loss_sum.backward()
+                    
+                    if Config.debug:
+                        # Plot histogram for each layer's gradients
+                        for name, param in model.named_parameters():
+                            if param.grad is not None:
+                                plt.figure(figsize=(13, 5))
+                                plt.hist(param.grad.cpu().detach().numpy().flatten(), bins=50, alpha=0.75)
+                                plt.title(f"Gradient Distribution: {name}")
+                                plt.xlabel("Gradient Value")
+                                plt.ylabel("Frequency")
+                                plt.grid(True)
+                                os.makedirs(f"{log_dir}/grad_visualize", exist_ok=True)
+                                plt.savefig(f"{log_dir}/grad_visualize/grad_{name}.png")
+                    
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=Config.grad_clip)
+                    print(norm)
+                    if norm > Config.grad_threshold:
+                        logger.log_extra(f"spike occured in patient {patient_id} \n")
+                    
+            norm /= accum_steps
 
             # log the gradients and parameter values to tensorboard to check the training process
-            writer.add_histogram("gradients", norm, epoch * nb + i)
+            try:
+                writer.add_histogram("gradients", norm, epoch * nb + i)
+            except:
+                pass
 
             # DEBUG: Check gradients
             def check_gradients(named_parameters):
@@ -552,7 +461,7 @@ def main(cfg):
                             print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
 
             # print(f"----------------  gradients  -------------------------")
-            # check gradients for the first batch
+            # # check gradients for the first batch
             # if j == 0:
             #     check_gradients(model.named_parameters())
             # print(f"------------------------------------------------------")
@@ -566,17 +475,28 @@ def main(cfg):
             optimizer.zero_grad()
 
             log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
+
+            # if norm is nan or inf, print the log message and break the loop
+            if torch.isnan(norm) or torch.isinf(norm):
+                print("Norm is nan or inf")
+
             print(log_message)
-            print(preds)
+            print(f"{preds=}")
+            print(f"{preds_CT=}")
+            print(f"{preds_PA=}")
+            print(f"{preds_CLINICAL=}")
 
             logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
 
+        # ================================================================
+        #                     Training loop
+        # ================================================================
         # test the model with validation set
         with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
             model.eval()
-            loss_accum = 0.0
-            targets = []
-            preds = []
+            loss_accum, loss_accum_CT, loss_accum_PA, loss_accum_CLINICAL = 0.0, 0.0, 0.0, 0.0 
+            targets = list()
+            preds, preds_CT, preds_PA, preds_CLINICAL = list(), list(), list(), list()
 
             for k, data in enumerate(test_loader):
                 data = trainer.preprocess_batch(data)
@@ -591,33 +511,46 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device)
+                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device).unsqueeze(0)
 
                 if proc_data is None:
                     print("No data: " + data["im_file"])
                     continue
 
-                pred = model(proc_data["CT_image"], proc_data["img"], clinical_data)
+                pred, pred_CT, pred_PA, pred_CLINICAL = model(proc_data["CT_image"], proc_data["img"], clinical_data)
                 preds.append(round(F.sigmoid(pred.detach()).item(), 4))
+                preds_CT.append(round(F.sigmoid(pred_CT.detach()).item(), 4))
+                preds_PA.append(round(F.sigmoid(pred_PA.detach()).item(), 4))
+                preds_CLINICAL.append(round(F.sigmoid(pred_CLINICAL.detach()).item(), 4))
 
                 # binary cross entropy loss
                 onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
                 targets.append(onj_cls.item())
 
                 cls_loss = criterion(pred, onj_cls)
+                cls_loss_CT = criterion(pred_CT, onj_cls)
+                cls_loss_PA = criterion(pred_PA, onj_cls)
+                cls_loss_CLINICAL = criterion(pred_CLINICAL, onj_cls)
 
                 loss_accum += cls_loss.detach()
+                loss_accum_CT += cls_loss_CT.detach()
+                loss_accum_PA += cls_loss_PA.detach()
+                loss_accum_CLINICAL += cls_loss_CLINICAL.detach()
 
             loss_accum /= len(test_loader)
+            loss_accum_CT /= len(test_loader)
+            loss_accum_PA /= len(test_loader)
+            loss_accum_CLINICAL /= len(test_loader)
 
-            try:
-                print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
-            except:
-                pass
+            print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f} \nloss_CT: {loss_accum_CT.item():.4f} loss_PA: {loss_accum_PA.item():.4f} loss_CLINICAL: {loss_accum_CLINICAL.item():.4f}")
+
             logger.log(
                 f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
             )
 
+            # ================================================================
+            #                     Save the best model
+            # ================================================================
             if best_loss > loss_accum.item():
                 best_loss = loss_accum.item()
                 torch.save(
@@ -661,3 +594,7 @@ def main(cfg):
 
 if __name__ == "__main__":
     main()
+
+
+# cv2.imwrite("PA_image.jpg", (data["img"]*255).squeeze().permute(1,2,0).detach().cpu().float().numpy())
+# cv2.imwrite("CT_image.jpg", (data["CT_image"]*255).squeeze()[:,:,32].detach().cpu().float().numpy())")
