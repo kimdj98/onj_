@@ -7,10 +7,10 @@ class ClinicalModel(nn.Module):
         super(ClinicalModel, self).__init__()
         self.HPARAMS = HPARAMS
         self.fc1 = nn.Linear(HPARAMS["input_dim"], HPARAMS["u1"])  # units1
-        self.dropout1 = nn.Dropout(p=HPARAMS["d1"])  # dropout1
+        # self.dropout1 = nn.Dropout(p=HPARAMS["d1"])  # dropout1
 
         self.fc2 = nn.Linear(HPARAMS["u1"], HPARAMS["u2"])  # units2
-        self.dropout2 = nn.Dropout(p=HPARAMS["d2"])  # dropout2
+        # self.dropout2 = nn.Dropout(p=HPARAMS["d2"])  # dropout2
 
         self.fc_final = nn.Linear(HPARAMS["u2"], 1)  # Final output layer
 
@@ -36,7 +36,7 @@ HPARAMS = {
     "input_dim": data_x.shape[1],
     "u1": 512,
     "u2": 512,
-    "d1": 0.362,
-    "d2": 0.333,
+    # "d1": 0.362,
+    # "d2": 0.333,
     "load_path": load_path,
 }

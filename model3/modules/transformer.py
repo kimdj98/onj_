@@ -18,10 +18,11 @@ class Encoder(nn.Module):
         Args:
             x: (B, N, E)
         """
-        x, x = input  # HACK: for nn.Sequential
-        x = x + self.s_attn((x, x))
+        x, _, _ = input  # HACK: for nn.Sequential
+        attn_output, attn_weights = self.s_attn((x, x))
+        x = x + attn_output
         x = x + self.feed_forward(x)
-        return x, x
+        return x, x, attn_weights
 
 
 class Decoder(nn.Module):
@@ -39,11 +40,17 @@ class Decoder(nn.Module):
             x: (B, N, E) 3d latent vector
             y: (B, M, E) 2d latent vector
         """
-        x, y = input  # HACK: for nn.Sequential
-        y = y + self.s_attn((y, y))
-        y = y + self.c_attn((x, y))
+        x, y, _, _ = input  # HACK: for nn.Sequential
+        y_attn_output, s_attn_weights = self.s_attn((y, y))
+        y = y + y_attn_output
+        y_attn_output, c_attn_weights = self.c_attn((x, y))
+        y = y + y_attn_output 
         y = y + self.feed_forward(y)
-        return x, y
+        
+        # y = y + self.s_attn((y, y))
+        # y = y + self.c_attn((x, y))
+        # y = y + self.feed_forward(y)
+        return x, y, s_attn_weights, c_attn_weights
 
 
 class Transformer(nn.Module):
@@ -62,10 +69,15 @@ class Transformer(nn.Module):
             x: (B, N, E) 3d embedding
             y: (B, M, E) 2d embedding
         """
-        x1, y1 = input  # HACK: for nn.Sequential
-        x2, _ = self.encoder((x1, x1))
-        x3, y2 = self.decoder((x2, y1))
-        return x3, y2  # x: latent vector of 3d, y: latent vector of 2d which we should focus
+        x1, y1 = input  # HACK: for nn.Sequential 
+
+        # x2, _ = self.encoder((x1, x1))
+        x2, _, enc_attn_weights = self.encoder((x1, x1, x1))
+
+        # x3, y2 = self.decoder((x2, y1))
+        x3, y2, s_attn_weights, c_attn_weights = self.decoder((x2, y1, x2, y1))
+
+        return x3, y2, enc_attn_weights, s_attn_weights, c_attn_weights  # x: latent vector of 3d, y: latent vector of 2d which we should focus
 
 
 class MultiHeadAttention(nn.Module):
@@ -84,6 +96,8 @@ class MultiHeadAttention(nn.Module):
 
         self.norm_x = nn.LayerNorm(dim)
         self.norm_y = nn.LayerNorm(dim)
+        
+        self.proj = nn.Linear(dim ,dim) 
 
     def forward(self, input):
         """
@@ -117,8 +131,10 @@ class MultiHeadAttention(nn.Module):
         attn = F.softmax(attn_scores, dim=-1)  # (B, num_heads, M, N)
         out = attn @ v_x  # (B, num_heads, M, head_dim)
         out = rearrange(out, "B H M D -> B M (H D)")  # (B, M, E)
-
-        return out
+        
+        out = self.proj(out)
+        
+        return out, attn
 
 
 class MultiHeadCrossAttention(nn.Module):
@@ -304,7 +320,7 @@ class PatchEmbed2D(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer (Default: None)
     """
 
-    def __init__(self, img_size=(2048, 2048), patch_size=(32, 32), in_chans=1, embed_dim=256, norm_layer=None):
+    def __init__(self, img_size=(1024, 1024), patch_size=(32, 32), in_chans=1, embed_dim=256, norm_layer=None):
         super(PatchEmbed2D, self).__init__()
         self.img_size = img_size
         self.patch_size = patch_size

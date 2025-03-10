@@ -44,11 +44,11 @@ args = {
 
 @dataclass
 class Config:
-    gpu: int = 6
+    gpu: int = 7
     n_embed: int = 256
-    n_layer: int = 2
+    n_layer: int = 4
     expansion: int = 4
-    lr: float = 3e-6
+    lr: float = 1e-5
     debug: bool = False
     n_head: int = 8
     n_class: int = 1
@@ -80,10 +80,11 @@ class TransformerModel(nn.Module):
         super(TransformerModel, self).__init__()
         self.base_path = hydra_config.data.data_dir
 
-        # to configure the data size and types
-        data = preprocess_data(self.base_path, data_example)
+        # # to configure the data size and types
+        # data = preprocess_data(self.base_path, data_example)
 
         # self.common_embed_dim = model_config.common_embed_dim
+        self.cls_token = nn.Parameter(torch.randn(1, 1, model_config.n_embed)*1e-3)
 
         # CNN Feature Extractors
         # 2D CNN for 2D images
@@ -132,6 +133,7 @@ class TransformerModel(nn.Module):
                 nn.Linear(model_config.n_embed*model_config.expansion, model_config.n_embed),
             ]
         )
+
         self.CT_embedding = nn.Sequential(
             *[
                 nn.Linear(model_config.n_embed, model_config.n_embed*model_config.expansion),
@@ -166,6 +168,8 @@ class TransformerModel(nn.Module):
 
         feature_x2 = feature_x1 + self.pe_x
         feature_y2 = feature_y1 + self.pe_y
+        
+        # feature = torch.cat((self.cls_token, feature_x2, feature_y2), dim=1)
 
         _, y1 = self.transformer((feature_x2, feature_y2))
 
@@ -177,7 +181,9 @@ class TransformerModel(nn.Module):
         x2 = self.CT_feature_extractor(x1)
 
         # concat the features y2([1, 4096]) and z1([225])
-        z1 = z1
+        if z1.dim() == 1:
+            z1 = z1.unsqueeze(0)
+
         concat_feature = torch.cat((y2, x2, z1), dim=1)
         out = self.classifier(concat_feature)
         return out, CT_out, PA_out, CLINICAL_out
@@ -339,6 +345,16 @@ def main(cfg):
     #     # only initialize fully connected layers
     #     if len(p.shape) > 1:
     #         nn.init.xavier_uniform_(p)
+    
+    from sklearn.preprocessing import StandardScaler
+    torch.use_deterministic_algorithms(False) # HACK: max_pool3d_with_indices_backward_cuda does not have a deterministic implementation
+    # load data from /mnt/aix22301/onj/code/clinical/data_X.csv
+    data = pd.read_csv("/mnt/aix22301/onj/code/clinical/data_X.csv", index_col=0)
+    
+    scaler = StandardScaler()
+    
+    scaler.fit(data)
+    
     i = 0
     for m in model.modules():
         if isinstance(m, nn.Linear):
@@ -346,7 +362,7 @@ def main(cfg):
             nn.init.xavier_uniform_(m.weight)
 
     # print(f"Initialized {i} linear layers")
-
+ 
     while epoch <= Config.epochs:
         epoch += 1
         pbar = iter(enumerate(train_loader))
@@ -378,9 +394,10 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device).unsqueeze(0)
+                    clinical_data = scaler.transform(data_x.iloc[idx.index[0]].to_frame().T)
+                    clinical_data = torch.tensor(clinical_data, dtype=torch.float32).to(trainer.device)
 
-                with torch.cuda.amp.autocast(trainer.amp):
+                with torch.amp.autocast("cuda"):
                     data = trainer.preprocess_batch(data)
                     data = preprocess_data(base_path, data)  # adds CT data and unify the data device
                     if data is None:  # case when only PA exist
@@ -420,7 +437,8 @@ def main(cfg):
                     loss_accum_PA += loss_PA.detach()
                     loss_accum_CLINICAL += loss_CLINICAL.detach()
                     
-                    loss_sum = 0.006*loss + 1*loss_CT + 2*loss_PA + 4*loss_CLINICAL
+                    # loss_sum = 0.006*loss + 1*loss_CT + 2*loss_PA + 4*loss_CLINICAL
+                    loss_sum = loss + 5.0*loss_CT + 5.0*loss_PA + 5.0*loss_CLINICAL
                     loss_sum.backward()
                     
                     if Config.debug:
@@ -437,7 +455,9 @@ def main(cfg):
                                 plt.savefig(f"{log_dir}/grad_visualize/grad_{name}.png")
                     
                     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=Config.grad_clip)
-                    print(norm)
+                    
+                    print(norm.item())
+                    
                     if norm > Config.grad_threshold:
                         logger.log_extra(f"spike occured in patient {patient_id} \n")
                     

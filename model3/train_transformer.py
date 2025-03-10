@@ -31,6 +31,8 @@ from model3.modules.transformer import (
     PatchEmbed2D,
 )  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
 from sklearn.metrics import roc_auc_score
+import matplotlib.pyplot as plt
+import numpy as np 
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
 
@@ -130,6 +132,7 @@ class Config:
     width_2d: int = 1024
     width_3d: int = 512
     gpu: int = 6
+    # gpu: 'cpu'
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
@@ -201,17 +204,96 @@ class TransformerModel(nn.Module):
         patches_3d = self.proj3d(patches_3d)  # 3d cubelet patch embedding
         patches_3d += self.pe_x
 
-        patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
+        patches_2d = self.patch_embed2d(y[:, 0:1]) #!(1, 1024, 16, 16) # B E H W (Batch, Embedding, Height, Width)
         patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
+
+        #! GET CAM IMAGE
+        #!  patch size= (32, 32), B, M=2048/64 * 2048/64 = 1024 , E    
+    
         patches_2d = self.proj2d(patches_2d)  # 2d square patch embedding
         patches_2d += self.pe_y
 
-        x, y = self.transformer((patches_3d, patches_2d))
+        x, y, enc_attn, s_attn, c_attn = self.transformer((patches_3d, patches_2d))
+        #! enc_attn = (1, 8, 8192, 8192) 3D self attention
+        #! s_attn = (1, 8, 256, 256) 2D self attention
+        #! c_attn = (1, 8, 256, 8192) 2D-3D self attention
+        
+        enc_attn_map = get_activation_map_3d(enc_attn)
+        s_attn_map = get_activation_map_2d(s_attn)
+        
 
         out = self.classifier(y)
-        return out
+        return out, s_attn_map, enc_attn_map
 
 
+def visualize_activation_map_2d(img, cam, j, epoch, data):
+    name = data["im_file"].split('train/')[1].split('.jpg')[0]
+    
+    img = img.float().cpu().numpy() #(1, 3, 1024, 1024)
+    img_to_show = np.transpose(img[0], (1, 2, 0))
+    cam = cam.float().cpu().detach().numpy() #(1, 1024, 1024)
+    plt.figure(figsize=(10, 10))
+    plt.imshow(img_to_show, cmap='gray')
+    plt.imshow(cam[0], cmap='jet', alpha=0.5)
+    plt.colorbar()
+    plt.axis('off')
+    plt.savefig(f'code/model3/tmp2_2d/{str(name)}_{str(epoch)}.jpg')
+    plt.close()
+  
+ 
+def visualize_activation_map_3d(img, cam, j, epoch, data):
+    name = data["im_file"].split('train/')[1].split('.jpg')[0]
+    
+    #! img = (1, 1, 512, 512, 64)
+    #! cam = (512, 512, 64)
+    
+    for soi in range(img.shape[4]):
+        if soi % 5 == 0:
+            img = img.float().cpu().numpy() #(1, 3, 1024, 1024)
+            img_to_show = img[0, 0, :, :, soi]
+            cam = cam.float().cpu().detach().numpy()[:, :, soi] #(1, 1024, 1024)
+            plt.figure(figsize=(10, 10))
+            plt.imshow(img_to_show, cmap='gray')
+            plt.imshow(cam, cmap='jet', alpha=0.5)
+            plt.colorbar()
+            plt.axis('off')
+            plt.savefig(f'code/model3/tmp2_3d/{str(name)}_{str(soi)}_{str(epoch)}.jpg')
+            plt.close()
+
+
+def get_activation_map_2d(attn_weights, img_size=(1024, 1024), patch_size=Config.n_patch2d, B=1):
+    grid_size = [img_size[i] // patch_size[i] for i in range(2)]
+    num_patches = grid_size[0] * grid_size[1] #256
+    
+    #attn_weights = (1, 8, 256, 256) -> 8 number of heads, 256 = number of attention
+    attn_mean = attn_weights.mean(dim=1) # mean across heads
+    attn_map = attn_mean.mean(dim=1) # m(b, 256), global attention for each patch
+    
+    attn_map = attn_mean[:, 0, :].reshape(B, grid_size[0], grid_size[1]) #(B, 16, 16)
+    attn_map = F.interpolate(attn_map.unsqueeze(1), size=img_size, mode='bilinear', align_corners=False)
+    attn_map = attn_map.squeeze(1)
+    
+    attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min())
+    return attn_map
+
+def get_activation_map_3d(attn_weights, img_size=(512, 512, 64), patch_size=Config.n_patch3d, B=1):
+    #! CT = (1, 1, 512, 512, 64)
+    #! patch = (16, 16, 8)
+    #! attn_weights = (1, 8, 8192, 8192)
+    grid_size = [img_size[i] // patch_size[i] for i in range(3)]
+    num_patches = grid_size[0] * grid_size[1] * grid_size[2] #32 * 32 * 8 = 8192
+    
+    #attn_weights = (1, 8, 8192, 8192) -> 8 number of heads, 8192 = number of attention
+    attn_mean = attn_weights.mean(dim=1) # mean across heads
+    attn_map = attn_mean.mean(dim=1) # m(b, 8192), global attention for each patch
+    
+    attn_map = attn_mean[:, 0, :].reshape(B, grid_size[0], grid_size[1], grid_size[2]) #(1, 32, 32, 8)
+    attn_map = F.interpolate(attn_map.permute(0, 3, 1, 2), size=(512, 512), mode='bilinear', align_corners=False) #!(1, 8, 512, 512)
+    attn_map = F.interpolate(attn_map.permute(0, 2, 3, 1)[0], size=(64), mode='linear', align_corners=False) #!(512, 512, 64)
+    
+    attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min())
+    return attn_map
+        
 @hydra.main(version_base="1.3", config_path="../config", config_name="config")
 def main(cfg):
     from torch.utils.tensorboard import SummaryWriter
@@ -375,7 +457,12 @@ def main(cfg):
                         continue
 
                     # Forward pass
-                    pred = model(data["CT_image"], data["img"])
+                    # pred = model(data["CT_image"], data["img"])
+                    pred, cam1, cam2 = model(data["CT_image"], data["img"])
+                    
+                    if epoch % 10 == 0:
+                        visualize_activation_map_2d(data["img"], cam1, j, epoch, data)
+                        visualize_activation_map_3d(data["CT_image"], cam2, j, epoch, data)
 
                     preds.append(round(F.sigmoid(pred.detach()).item(), 4))
                     # binary cross entropy loss
@@ -440,7 +527,7 @@ def main(cfg):
                     print("No data: " + data["im_file"])
                     continue
 
-                pred = model(proc_data["CT_image"], proc_data["img"])
+                pred, cam1, cam2 = model(proc_data["CT_image"], proc_data["img"])
                 preds.append(round(F.sigmoid(pred.detach()).item(), 4))
 
                 # binary cross entropy loss

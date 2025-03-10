@@ -16,22 +16,8 @@ import torch
 import torch.nn as nn
 
 nn.Conv1d
-from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
-from omegaconf import DictConfig
-from einops import rearrange
-from model5.modules.utils import preprocess_data
-from model5.modules.backbone import ResNet18_2D, resnet3d18
-from model5.modules.transformer import (
-    Transformer,
-    PatchEmbed3D,
-    PatchEmbed2D,
-)
-
-from model5.modules.clinical_model_backup import *  # includes parameters and data path for clinical model
-from model5.modules.post_processor import ImageFeatureExtractor, Classifier
-from sklearn.metrics import roc_auc_score
 from ultralytics import YOLO
 
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
@@ -45,10 +31,9 @@ args = {
     "mode": "train",
 }
 
+from log_script import *
 
 clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
-
-from log_script import TransformerModel, Config
 
 def normalize_heatmap(heatmap):
     """Normalize a heatmap to the range [0, 1]."""
@@ -147,22 +132,12 @@ def main(cfg):
         lr=Config.lr,
     )
 
-    # Convert Config to a dictionary
-    config_instance = Config()
-    config_dict = asdict(config_instance)
-
-    # Generate the log_dir by joining key-value pairs in config_dict
-    log_dir = "log/{}_{}".format(
-        datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
-        "_".join(f"{key}_{value}" for key, value in config_dict.items()),
-    )
-
     # ================================================================
     #                     Resume from checkpoint
     # ================================================================
     if Config.resume:
         # Load checkpoint to CPU
-        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
+        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"), weights_only=False)
 
         # Load model state
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -179,10 +154,6 @@ def main(cfg):
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(trainer.device)
 
-        best_auroc = checkpoint["best_auroc"]
-        best_loss = checkpoint["best_loss"]
-        epoch = checkpoint["epoch"]
-
     # ================================================================
     #                    Validation loop
     # ================================================================
@@ -190,11 +161,11 @@ def main(cfg):
     model.eval()
 
     target_layers = [
-        model.cnn2d.layer3[1].conv2,
+        # model.cnn2d.layer3[1].conv2,
         # model.cnn2d.layer4[0].conv1,
         # model.cnn2d.layer4[0].conv2,
-        # model.cnn2d.layer4[1].conv1, 
-        # model.cnn2d.layer4[1].conv2,
+        model.cnn2d.layer4[1].conv1, 
+        model.cnn2d.layer4[1].conv2,
         ]
 
 
@@ -235,7 +206,7 @@ def main(cfg):
         if proc_data is None:
             print("No data: " + data["im_file"])
             continue
-
+        
         pred = model(proc_data["CT_image"].float(), proc_data["img"].float(), clinical_data.float())[2]
 
         # pred_wo_img = model(proc_data["CT_image"].float(), torch.zeros_like(proc_data["img"]).float(), clinical_data.float())[0]

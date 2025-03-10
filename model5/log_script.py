@@ -44,11 +44,11 @@ args = {
 
 @dataclass
 class Config:
-    gpu: int = 6
+    gpu: int = 4
     n_embed: int = 256
-    n_layer: int = 2
+    n_layer: int = 6
     expansion: int = 4
-    lr: float = 3e-5
+    lr: float = 1e-5
     debug: bool = False
     n_head: int = 8
     n_class: int = 1
@@ -62,11 +62,8 @@ class Config:
     grad_clip: int = 10000
     grad_threshold: int = 60
     eps: float = 1e-6
-    resume: str = "/mnt/aix22301/onj/log/2025-02-25_22-24-50_gpu_3_n_embed_256_n_layer_2_expansion_4_lr_3e-05_debug_False_n_head_8_n_class_1_width_2d_1024_width_3d_512_lambda1_0.0_lambda2_1.0_epochs_100_batch_1_grad_accum_steps_16_grad_clip_10000_grad_threshold_60_eps_1e-06_resume_None/last.pth"  # set resume to None or path string
+    resume: str = "/mnt/aix22301/onj/log/2025-03-06_15-21-25_gpu_4_n_embed_256_n_layer_6_expansion_4_lr_1e-05_debug_False_n_head_8_n_class_1_width_2d_1024_width_3d_512_lambda1_0.0_lambda2_1.0_epochs_100_batch_1_grad_accum_steps_16_grad_clip_10000_grad_threshold_60_eps_1e-06_resume_None/best_auroc.pth"  # set resume to None or path string
 
-    # resume: str = (
-    #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
-    # )
 
 clinical_model = ClinicalModel(HPARAMS)  # HPARAMS is defined in clinical_model.py
 
@@ -179,7 +176,7 @@ class TransformerModel(nn.Module):
         # concat the features y2([1, 4096]) and z1([225])
         if z1.dim() == 1:
             z1 = z1.unsqueeze(0)
-        
+
         concat_feature = torch.cat((y2, x2, z1), dim=1)
         out = self.classifier(concat_feature)
         return out, CT_out, PA_out, CLINICAL_out
@@ -223,6 +220,7 @@ def main(cfg):
 
     if torch.cuda.is_available():
         torch.cuda.current_device()  # HACK: Eagerly Initialize CUDA to avoid lazy initialization issue in _smart_load("trainer")
+        torch.use_deterministic_algorithms(False) # HACK: Avoid warnings since maxpool3d is not deterministic
 
     yolo_model = YOLO(model=custom_yaml, task="detect", verbose=False)
     trainer = yolo_model._smart_load("trainer")(overrides=args, _callbacks=yolo_model.callbacks)
@@ -341,6 +339,15 @@ def main(cfg):
     #     # only initialize fully connected layers
     #     if len(p.shape) > 1:
     #         nn.init.xavier_uniform_(p)
+    
+    from sklearn.preprocessing import StandardScaler
+    # load data from /mnt/aix22301/onj/code/clinical/data_X.csv
+    data = pd.read_csv("/mnt/aix22301/onj/code/clinical/data_X.csv", index_col=0)
+    
+    scaler = StandardScaler()
+    
+    scaler.fit(data)
+    
     i = 0
     for m in model.modules():
         if isinstance(m, nn.Linear):
@@ -348,7 +355,8 @@ def main(cfg):
             nn.init.xavier_uniform_(m.weight)
 
     # print(f"Initialized {i} linear layers")
-
+ 
+    torch.use_deterministic_algorithms(False)
     while epoch <= Config.epochs:
         epoch += 1
         pbar = iter(enumerate(train_loader))
@@ -380,7 +388,8 @@ def main(cfg):
 
                 else:
                     clinical_data = data_x.iloc[idx.index[0]]
-                    clinical_data = torch.tensor(clinical_data.values, dtype=torch.float32).to(trainer.device).unsqueeze(0)
+                    clinical_data = scaler.transform(data_x.iloc[idx.index[0]].to_frame().T)
+                    clinical_data = torch.tensor(clinical_data, dtype=torch.float32).to(trainer.device)
 
                 with torch.cuda.amp.autocast(trainer.amp):
                     data = trainer.preprocess_batch(data)
@@ -391,6 +400,7 @@ def main(cfg):
 
                     # Forward pass
                     pred, CT_pred, PA_pred, CLINICAL_pred = model(data["CT_image"], data["img"], clinical_data)
+
 
                     # add the predictions to the list
                     preds.append(round(F.sigmoid(pred.detach()).item(), 4))
@@ -422,7 +432,8 @@ def main(cfg):
                     loss_accum_PA += loss_PA.detach()
                     loss_accum_CLINICAL += loss_CLINICAL.detach()
                     
-                    loss_sum = 0.006*loss + 1*loss_CT + 2*loss_PA + 4*loss_CLINICAL
+                    # loss_sum = 0.006*loss + 1*loss_CT + 2*loss_PA + 4*loss_CLINICAL
+                    loss_sum = loss + 5.0*loss_CT + 5.0*loss_PA + 5.0*loss_CLINICAL
                     loss_sum.backward()
                     
                     if Config.debug:
@@ -439,7 +450,9 @@ def main(cfg):
                                 plt.savefig(f"{log_dir}/grad_visualize/grad_{name}.png")
                     
                     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=Config.grad_clip)
-                    print(norm)
+                    
+                    print(norm.item())
+                    
                     if norm > Config.grad_threshold:
                         logger.log_extra(f"spike occured in patient {patient_id} \n")
                     
