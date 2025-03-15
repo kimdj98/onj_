@@ -3,6 +3,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from omegaconf import DictConfig
+
+from .classifier import Classifier
+from .transformer_components import CustomTransformerEncoderLayer, CustomTransformerEncoder
+from .utils import preprocess_data
 
 
 class Encoder(nn.Module):
@@ -353,3 +358,64 @@ class PatchEmbed2D(nn.Module):
         if self.norm:
             x = self.norm(x)
         return x
+
+
+class TransformerModel(nn.Module): 
+    def __init__(
+        self,
+        hydra_config: DictConfig,  # hydra config
+        model_config,  # model config
+        data_example: dict,  # for model configuration depending on the data size and etc
+    ):
+        super(TransformerModel, self).__init__()
+        self.base_path = hydra_config.data.data_dir
+        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
+        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
+
+        self.num_heads = model_config.n_head
+        # to configure the data size and types
+        data = preprocess_data(self.base_path, data_example)
+
+        B, _, H, W, D = data["CT_image"].shape
+        seq_len_x = (
+            (H // model_config.n_patch3d[0]) * (W // model_config.n_patch3d[1]) * (D // model_config.n_patch3d[2])
+        )
+
+        B, _, H, W = data["img"].shape
+        seq_len_y = (H // model_config.n_patch2d[0]) * (W // model_config.n_patch2d[1])
+
+        self.pe_x = nn.Parameter(torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3)
+        self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
+        
+        self.cls_token = nn.Parameter(torch.randn(1, 1, model_config.n_embed) * 1e-3)
+        
+        self.proj3d = nn.Linear(model_config.n_embed, model_config.n_embed)
+        self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
+        
+        encoder_layer = CustomTransformerEncoderLayer(  
+            d_model=model_config.n_embed,
+            nhead=model_config.n_head,
+            dim_feedforward=2048,
+            dropout=0.1,
+        )
+        
+        self.transformer_encoder = CustomTransformerEncoder(encoder_layer, num_layers=model_config.n_layer)
+        self.classifier = Classifier(dim=model_config.n_embed, hidden_dim=2048)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
+        patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
+        patches_3d = self.proj3d(patches_3d)  # 3d cubelet patch embedding
+        patches_3d += self.pe_x
+
+        patches_2d = self.patch_embed2d(y[:, 0:1])  # B E H W (Batch, Embedding, Height, Width)
+        patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
+        patches_2d = self.proj2d(patches_2d)  # 2d square patch embedding
+        patches_2d += self.pe_y
+        
+        features = torch.cat((self.cls_token, patches_3d, patches_2d), dim=1)
+        
+        out = self.transformer_encoder(features)
+        
+        logit = self.classifier(out[0][:, 0, :])
+        return logit, out[1]

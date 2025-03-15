@@ -45,6 +45,36 @@ transforms = Compose(
     ]
 )
 
+def preprocess_panorama(img: torch.Tensor, target_size=(512, 1024)) -> torch.Tensor:
+    """
+    Preprocess panorama image:
+    1. Cut to target_size[0] x W by center cropping vertically
+    2. Cut 1/6 of the image from each side (top, bottom, left, right)
+    3. Resize to final target dimensions
+    
+    Args:
+        img: Input tensor of shape (B, C, H, W)
+        target_size: Tuple of (H, W) for final image dimensions
+    Returns:
+        Processed tensor of shape (B, C, target_size[0], target_size[1])
+    """
+    _, _, H, W = img.shape
+    
+    # First crop vertically to get target height
+    start_y = (H - target_size[0]) // 2  # Center crop vertically
+    img = img[:, :, start_y:start_y+target_size[0], :]
+    
+    # Calculate the amount to cut from each side (1/6 of current dimensions)
+    cut_h = img.shape[2] // 6
+    cut_w = img.shape[3] // 6
+    
+    # Cut from all sides
+    img = img[:, :, cut_h:-cut_h, cut_w:-cut_w]
+    
+    # Resize to final dimensions
+    img = torch.nn.functional.interpolate(img, size=target_size, mode='bilinear', align_corners=False)
+    
+    return img
 
 def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
     base_path = Path(base_path)
@@ -53,7 +83,11 @@ def preprocess_data(base_path: Path, data: Dict[str, Any]) -> Dict[str, Any]:
             data[key] = data[key][0]
 
     device = data["img"].device
+    
+    # Preprocess panorama image with target size matching model's expected input
+    data["img"] = preprocess_panorama(data["img"], target_size=(512, 1024))
     data["img"] = data["img"].bfloat16()
+    
     patient = data["im_file"].split("/")[-1].split(".")[0]  # "EW-0001"
 
     # if base_path/ONJ_labeling/patient/CBCT exists, then it is a CBCT image and the label is 1 for ONJ

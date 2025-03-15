@@ -1,41 +1,39 @@
+# Standard library imports
 import os
 import sys
 import math
+import logging
+import time
 from datetime import datetime
-import copy
-
-sys.path.append("/mnt/aix22301/onj/code/")
-
-import hydra
 from dataclasses import dataclass
 
+# Third-party imports
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-
-nn.Conv1d
-from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
-
-import ultralytics
-from ultralytics.nn.modules.head import Classify, Detect  # add classify to layer number 8
-from ultralytics.utils.loss import v8DetectionLoss, v8ClassificationLoss
-from ultralytics.models.yolo.detect import DetectionTrainer
-from ultralytics.nn.tasks import DetectionModel
-
-from omegaconf import DictConfig
-from einops import rearrange
-from model3.modules.utils import preprocess_data
-from model3.modules.transformer import (
-    Transformer,
-    PatchEmbed3D,
-    PatchEmbed2D,
-)  # MultiHeadSelfAttention, MultiHeadCrossAttention, PatchEmbed3D, PatchEmbed2D
+from torch.utils.data.dataset import ConcatDataset
+from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import roc_auc_score
-import matplotlib.pyplot as plt
-import numpy as np 
+from einops import rearrange
+from omegaconf import DictConfig
+from ultralytics import YOLO
 
+# Hydra imports
+import hydra
+
+# Local imports
+sys.path.append("/mnt/aix22301/onj/code/")
+from model3.modules.utils import preprocess_data
+from model3.utils import get_cls_pa_attention_map, visualize_cls_pa_attention_map, Logger
+from model3.modules.transformer import TransformerModel, CustomTransformerEncoderLayer, CustomTransformerEncoder
+from model3.modules.transformer import PatchEmbed3D, PatchEmbed2D
+from model3.modules.classifier import Classifier
+from utils import check_gradients, save_file
+
+# Constants
 dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
-
 version = "yolov8n"
 
 args = {
@@ -47,92 +45,17 @@ args = {
     "mode": "train",
 }
 
-import logging
-import time
-import hydra
-import torch
-from torch.utils.data.dataset import ConcatDataset
-
-from ultralytics import YOLO
-from ultralytics.utils import (
-    ARGV,
-    ASSETS,
-    DEFAULT_CFG_DICT,
-    LOGGER,
-    RANK,
-    TQDM,
-    SETTINGS,
-    callbacks,
-    checks,
-    emojis,
-    yaml_load,
-)
-
-
-class Logger:
-    # NOTE: do not move this file into other folder for refactoring for example utils.py or etc.
-    def __init__(self, log_file):
-        self.log_file = log_file
-        self.log_script_file = log_file.replace("log.txt", "log_script.py")
-        self.log_data_file = log_file.replace("log.txt", "log_data.txt")
-        with open(log_file, "w") as f:
-            pass
-        with open(self.log_script_file, "w") as f:
-            pass
-        with open(self.log_data_file, "w") as f:
-            pass
-
-        self.log_script()
-        self.log_data()
-
-        self.step = 0
-
-    def log(self, message):
-        self.step += 1
-        with open(self.log_file, "a") as f:
-            f.write(f"{self.step} " + message)
-
-    def log_script(self):
-        # Open current file and log every lines of code inside the file
-        with open(__file__, "r") as f:
-            lines = f.readlines()
-
-        with open(self.log_script_file, "a") as f2:
-            f2.writelines(lines)
-
-    def log_data(self):
-        with open(dataset_yaml, "r") as f:
-            lines = f.readlines()
-
-        with open(self.log_data_file, "a") as f:
-            f.writelines(lines)
-
-    def resume(self, resume_file):  # NOT USED
-        # Open the existing log file to read its content
-        with open("/".join(resume_file.split("/")[:-1]) + "/log.txt", "r") as f:
-            lines = f.readlines()  # Read all lines
-
-        # Write the content to the new log file
-        with open(self.log_file, "w") as f2:
-            f2.writelines(lines)
-
-        # Get the last step number from the lines read
-        if lines:
-            self.step = int(lines[-1].split(" ")[0])
-
-
 @dataclass
 class Config:
     n_embed: int = 1024
     n_head: int = 8
     n_class: int = 2
-    n_layer: int = 4
+    n_layer: int = 2
     n_patch3d: tuple = (16, 16, 8)
-    n_patch2d: tuple = (64, 64)
+    n_patch2d: tuple = (32, 32)
     width_2d: int = 1024
     width_3d: int = 512
-    gpu: int = 6
-    # gpu: 'cpu'
+    gpu: int = 7
     lambda1: float = 0.0  # det loss weight
     lambda2: float = 1.0  # cls loss weight
     epochs: int = 100
@@ -145,185 +68,15 @@ class Config:
     #     "/mnt/aix22301/onj/log/2024-08-07_12-32-58_lr_1e-06_gpu_7_layer_6_batch_16_epochs_200_patch3d_(16, 16, 8)_patch2d_(64, 64)_embed_1024_head_8_width2d_1024_width3d_512/best_auroc.pth"
     # )
 
-
-class Classifier(nn.Module):
-    def __init__(self, dim: int, seq_len: int, hidden_dim: int):
-        super(Classifier, self).__init__()
-        self.fc1 = nn.Linear(dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.fc3 = nn.Linear(seq_len, 1)
-        self.gelu = nn.GELU()
-
-    def forward(self, x: torch.Tensor):
-        x = self.fc1(x)
-        x = self.gelu(x)
-        x = self.fc2(x).squeeze(-1)
-        x = self.gelu(x)
-        x = self.fc3(x)
-        return x
-
-
-class TransformerModel(nn.Module):
-    def __init__(
-        self,
-        hydra_config: DictConfig,  # hydra config
-        model_config: Config,  # model config
-        data_example: dict,  # for model configuration depending on the data size and etc
-    ):
-        super(TransformerModel, self).__init__()
-        self.base_path = hydra_config.data.data_dir
-        self.patch_embed3d = PatchEmbed3D(patch_size=model_config.n_patch3d, embed_dim=model_config.n_embed)
-        self.patch_embed2d = PatchEmbed2D(patch_size=model_config.n_patch2d, embed_dim=model_config.n_embed)
-
-        # to configure the data size and types
-        data = preprocess_data(self.base_path, data_example)
-
-        B, _, H, W, D = data["CT_image"].shape
-        seq_len_x = (
-            (H // model_config.n_patch3d[0]) * (W // model_config.n_patch3d[1]) * (D // model_config.n_patch3d[2])
-        )
-
-        B, _, H, W = data["img"].shape
-        seq_len_y = (H // model_config.n_patch2d[0]) * (W // model_config.n_patch2d[1])
-
-        self.pe_x = nn.Parameter(torch.randn(1, seq_len_x, model_config.n_embed) * 1e-3)
-        self.pe_y = nn.Parameter(torch.randn(1, seq_len_y, model_config.n_embed) * 1e-3)
-
-        self.proj3d = nn.Linear(model_config.n_embed, model_config.n_embed)
-        self.proj2d = nn.Linear(model_config.n_embed, model_config.n_embed)
-
-        self.transformer = Transformer(
-            n_layer=Config.n_layer, seq_len_x=seq_len_x, seq_len_y=seq_len_y, dim=model_config.n_embed, qk_scale=1.0
-        )
-
-        self.classifier = Classifier(model_config.n_embed, seq_len_y, model_config.n_embed * 4)
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
-        patches_3d = self.patch_embed3d(x)  # B E H W D (Batch, Embedding, Height, Width, Depth)
-        patches_3d = rearrange(patches_3d, "B E H W D -> B (H W D) E")
-        patches_3d = self.proj3d(patches_3d)  # 3d cubelet patch embedding
-        patches_3d += self.pe_x
-
-        patches_2d = self.patch_embed2d(y[:, 0:1]) #!(1, 1024, 16, 16) # B E H W (Batch, Embedding, Height, Width)
-        patches_2d = rearrange(patches_2d, "B E H W -> B (H W) E")
-
-        #! GET CAM IMAGE
-        #!  patch size= (32, 32), B, M=2048/64 * 2048/64 = 1024 , E    
-    
-        patches_2d = self.proj2d(patches_2d)  # 2d square patch embedding
-        patches_2d += self.pe_y
-
-        x, y, enc_attn, s_attn, c_attn = self.transformer((patches_3d, patches_2d))
-        #! enc_attn = (1, 8, 8192, 8192) 3D self attention
-        #! s_attn = (1, 8, 256, 256) 2D self attention
-        #! c_attn = (1, 8, 256, 8192) 2D-3D self attention
-        
-        enc_attn_map = get_activation_map_3d(enc_attn)
-        s_attn_map = get_activation_map_2d(s_attn)
-        
-
-        out = self.classifier(y)
-        return out, s_attn_map, enc_attn_map
-
-
-def visualize_activation_map_2d(img, cam, j, epoch, data):
-    name = data["im_file"].split('train/')[1].split('.jpg')[0]
-    
-    img = img.float().cpu().numpy() #(1, 3, 1024, 1024)
-    img_to_show = np.transpose(img[0], (1, 2, 0))
-    cam = cam.float().cpu().detach().numpy() #(1, 1024, 1024)
-    plt.figure(figsize=(10, 10))
-    plt.imshow(img_to_show, cmap='gray')
-    plt.imshow(cam[0], cmap='jet', alpha=0.5)
-    plt.colorbar()
-    plt.axis('off')
-    plt.savefig(f'code/model3/tmp2_2d/{str(name)}_{str(epoch)}.jpg')
-    plt.close()
-  
- 
-def visualize_activation_map_3d(img, cam, j, epoch, data):
-    name = data["im_file"].split('train/')[1].split('.jpg')[0]
-    
-    #! img = (1, 1, 512, 512, 64)
-    #! cam = (512, 512, 64)
-    
-    for soi in range(img.shape[4]):
-        if soi % 5 == 0:
-            img = img.float().cpu().numpy() #(1, 3, 1024, 1024)
-            img_to_show = img[0, 0, :, :, soi]
-            cam = cam.float().cpu().detach().numpy()[:, :, soi] #(1, 1024, 1024)
-            plt.figure(figsize=(10, 10))
-            plt.imshow(img_to_show, cmap='gray')
-            plt.imshow(cam, cmap='jet', alpha=0.5)
-            plt.colorbar()
-            plt.axis('off')
-            plt.savefig(f'code/model3/tmp2_3d/{str(name)}_{str(soi)}_{str(epoch)}.jpg')
-            plt.close()
-
-
-def get_activation_map_2d(attn_weights, img_size=(1024, 1024), patch_size=Config.n_patch2d, B=1):
-    grid_size = [img_size[i] // patch_size[i] for i in range(2)]
-    num_patches = grid_size[0] * grid_size[1] #256
-    
-    #attn_weights = (1, 8, 256, 256) -> 8 number of heads, 256 = number of attention
-    attn_mean = attn_weights.mean(dim=1) # mean across heads
-    attn_map = attn_mean.mean(dim=1) # m(b, 256), global attention for each patch
-    
-    attn_map = attn_mean[:, 0, :].reshape(B, grid_size[0], grid_size[1]) #(B, 16, 16)
-    attn_map = F.interpolate(attn_map.unsqueeze(1), size=img_size, mode='bilinear', align_corners=False)
-    attn_map = attn_map.squeeze(1)
-    
-    attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min())
-    return attn_map
-
-def get_activation_map_3d(attn_weights, img_size=(512, 512, 64), patch_size=Config.n_patch3d, B=1):
-    #! CT = (1, 1, 512, 512, 64)
-    #! patch = (16, 16, 8)
-    #! attn_weights = (1, 8, 8192, 8192)
-    grid_size = [img_size[i] // patch_size[i] for i in range(3)]
-    num_patches = grid_size[0] * grid_size[1] * grid_size[2] #32 * 32 * 8 = 8192
-    
-    #attn_weights = (1, 8, 8192, 8192) -> 8 number of heads, 8192 = number of attention
-    attn_mean = attn_weights.mean(dim=1) # mean across heads
-    attn_map = attn_mean.mean(dim=1) # m(b, 8192), global attention for each patch
-    
-    attn_map = attn_mean[:, 0, :].reshape(B, grid_size[0], grid_size[1], grid_size[2]) #(1, 32, 32, 8)
-    attn_map = F.interpolate(attn_map.permute(0, 3, 1, 2), size=(512, 512), mode='bilinear', align_corners=False) #!(1, 8, 512, 512)
-    attn_map = F.interpolate(attn_map.permute(0, 2, 3, 1)[0], size=(64), mode='linear', align_corners=False) #!(512, 512, 64)
-    
-    attn_map = (attn_map - attn_map.min()) / (attn_map.max() - attn_map.min())
-    return attn_map
-        
-@hydra.main(version_base="1.3", config_path="../config", config_name="config")
-def main(cfg):
-    from torch.utils.tensorboard import SummaryWriter
-
-    base_path = cfg.data.data_dir
-    best_auroc = 0.0
-    best_loss = 1e6
-    epoch = 0
-
-    # Hook function to capture the output
-    def hook_fn(module, input, output):
-        global feature_map
-        feature_map = output
-
-    # Function to register the hook
-    def register_hook(model, layer_index):
-        global feature_map
-        feature_map = None
-        layer = list(model.model.children())[layer_index]
-        layer.register_forward_hook(hook_fn)
-
-    custom_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
+def setup_yolo_trainer():
+    dataset_yaml = "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml"
     version = "yolov8x.pt"
     args = {
-        "model": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
+        "model": dataset_yaml,
         "imgsz": [1024, 1024],
         "task": "detect",
-        "data": "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml",
+        "data": dataset_yaml,
         "mode": "train",
-        "model": f"{version}",
         "device": f"{Config.gpu}",
         "batch": 1,
         "lr0": 4e-2,
@@ -331,263 +84,213 @@ def main(cfg):
     }
 
     if torch.cuda.is_available():
-        torch.cuda.current_device()  # HACK: Eagerly Initialize CUDA to avoid lazy initialization issue in _smart_load("trainer")
+        torch.cuda.current_device()
 
-    yolo_model = YOLO(model=custom_yaml, task="detect", verbose=False)
+    yolo_model = YOLO(model=dataset_yaml, task="detect", verbose=False)
     trainer = yolo_model._smart_load("trainer")(overrides=args, _callbacks=yolo_model.callbacks)
     trainer._setup_train(world_size=1)
+    return trainer
 
-    train_loader = trainer.train_loader
-    train_dataset = train_loader.dataset
-
-    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
-    test_dataset = test_loader.dataset
-
-    optimizer = trainer.optimizer
-
-    pbar = enumerate(train_loader)
-
-    nb = len(train_loader)
-
-    max_lr = Config.lr
-    min_lr = Config.lr * 0.1
-    warmup_steps = Config.epochs * nb // 10
-    max_steps = Config.epochs * nb
-
+def get_lr_scheduler(nb, max_lr, min_lr, warmup_steps, max_steps):
     def get_lr(it):
-        # 1) linear warmup for warmup_iters steps
         if it < warmup_steps:
             return max_lr * (it + 1) / warmup_steps
-        # 2) if it > lr_decay_iters, return min learning rate
         if it > max_steps:
             return min_lr
-        # 3) in between, use cosine decay down to min learning rate
         decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
         assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return min_lr + coeff * (max_lr - min_lr)
+    return get_lr
 
-    model = TransformerModel(cfg, Config, next(iter(train_loader)))
-    # use AdamW optimizer with cosine annealing
-    # add classifier, raw_model, fusor, feature_expand, proj parameters
-    optimizer = torch.optim.AdamW(
-        [{"params": model.parameters()}],  # put raw_model inside the model
-        lr=Config.lr,
-    )
-
-    # Set log_file
-    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_resume_{Config.resume!=None}_lr_{Config.lr}_gpu_{Config.gpu}_layer_{Config.n_layer}_batch_{Config.grad_accum_steps}_epochs_{Config.epochs}_patch3d_{Config.n_patch3d}_patch2d_{Config.n_patch2d}_embed_{Config.n_embed}_head_{Config.n_head}_width2d_{Config.width_2d}_width3d_{Config.width_3d}"
+def setup_logging(config):
+    log_dir = f"log/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_resume_{config.resume!=None}_lr_{config.lr}_gpu_{config.gpu}_layer_{config.n_layer}_batch_{config.grad_accum_steps}_epochs_{config.epochs}_patch3d_{config.n_patch3d}_patch2d_{config.n_patch2d}_embed_{config.n_embed}_head_{config.n_head}_width2d_{config.width_2d}_width3d_{config.width_3d}"
     os.makedirs(log_dir, exist_ok=True)
-    logger = Logger(os.path.join(log_dir, "log.txt"))
+    logger = Logger(os.path.join(log_dir, "log.txt"), "/mnt/aix22301/onj/code/data/yolo_dataset3.yaml")
     writer = SummaryWriter(f"{log_dir}/tensorboard")
+    return log_dir, logger, writer
 
-    max_full_batch = (
-        len(train_loader) // Config.grad_accum_steps
-    )  # calculate how many times one epoch should repeat the batch
-    last_accum_step = len(train_loader) % Config.grad_accum_steps  # handle the edge case
+def load_checkpoint(model, optimizer, device, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(device)
+                
+    return checkpoint["best_auroc"], checkpoint["best_loss"], checkpoint["epoch"]
 
-    # ================================================================
-    #                     Resume from checkpoint
-    # ================================================================
+def save_checkpoint(model, optimizer, epoch, best_auroc, best_loss, path):
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "best_auroc": best_auroc,
+        "best_loss": best_loss,
+    }, path)
+
+def train_step(model, data, criterion, config, trainer, base_path):
+    data = trainer.preprocess_batch(data)
+    data = preprocess_data(base_path, data)
+    if data is None:
+        return None, None, None
+        
+    pred, attn_weights = model(data["CT_image"], data["img"])
+    pred_prob = round(F.sigmoid(pred.detach()).item(), 4)
+    
+    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+    cls_loss = criterion(pred, onj_cls)
+    
+    return cls_loss, pred_prob, attn_weights
+
+def validate_step(model, data, criterion, trainer, base_path, epoch, log_dir):
+    data = trainer.preprocess_batch(data)
+    proc_data = preprocess_data(base_path, data)
+    
+    if proc_data is None:
+        print("No data: " + data["im_file"])
+        return None, None, None
+        
+    pred, attn_weights = model(proc_data["CT_image"], proc_data["img"])
+    pred_prob = round(F.sigmoid(pred.detach()).item(), 4)
+    
+    onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
+    cls_loss = criterion(pred, onj_cls)
+    
+    if (epoch - 1) % 10 == 0:
+        save_attention_map(data, attn_weights, proc_data, epoch, log_dir)
+        
+    return cls_loss, pred_prob, onj_cls.item()
+
+def save_attention_map(data, attn_weights, proc_data, epoch, log_dir):
+    patient_code = data["im_file"].split("/")[-1].split(".")[0]
+    attention_map_dir = os.path.join("attention_map", log_dir.split("/")[-1])
+    os.makedirs(attention_map_dir, exist_ok=True)
+    save_path = os.path.join(attention_map_dir, f"epoch_{epoch-1}_patient_{patient_code}.png")
+    visualize_cls_pa_attention_map(attn_weights[-1], proc_data["img"], Config, save_path=save_path)
+
+@hydra.main(version_base="1.3", config_path="../config", config_name="config")
+def main(cfg):
+    trainer = setup_yolo_trainer()
+    base_path = cfg.data.data_dir
+    
+    train_loader = trainer.train_loader
+    test_loader = trainer.get_dataloader(trainer.testset, batch_size=1, rank=-1, mode="train")
+    nb = len(train_loader)
+    
+    # Setup learning rate scheduler
+    max_lr, min_lr = Config.lr, Config.lr * 0.1
+    warmup_steps = Config.epochs * nb // 10
+    max_steps = Config.epochs * nb
+    get_lr = get_lr_scheduler(nb, max_lr, min_lr, warmup_steps, max_steps)
+    
+    # Initialize model and optimizer
+    model = TransformerModel(cfg, Config, next(iter(train_loader)))
+    optimizer = torch.optim.AdamW([{"params": model.parameters()}], lr=Config.lr)
+    
+    # Setup logging
+    log_dir, logger, writer = setup_logging(Config)
+    
+    # Calculate batch sizes
+    max_full_batch = len(train_loader) // Config.grad_accum_steps
+    last_accum_step = len(train_loader) % Config.grad_accum_steps
+    
+    # Initialize training variables
+    best_auroc, best_loss, epoch = 0.0, 1e6, 0
+    
+    # Resume from checkpoint if specified
     if Config.resume:
-        # logger.resume(Config.resume)
-
-        # Load checkpoint to CPU
-        checkpoint = torch.load(Config.resume, map_location=torch.device("cpu"))
-
-        # Load model state
-        model.load_state_dict(checkpoint["model_state_dict"])
-
-        # Move model to the correct device
-        model.to(trainer.device)
-
-        # Load optimizer state
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-        # Move optimizer state to the correct device
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(trainer.device)
-
-        best_auroc = checkpoint["best_auroc"]
-        best_loss = checkpoint["best_loss"]
-        epoch = checkpoint["epoch"]
-
-    # for gradient flow debugging
-    def print_grad(name):
-        def hook(grad):
-            if grad.sum() == 0:
-                print(f"Gradient for {name} = 0")
-            else:
-                print(f"Gradient for {name} = {grad.abs().mean()}")
-
-        return hook
-
-    # DEBUG: Check gradients
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.register_hook(print_grad(name))
-
+        best_auroc, best_loss, epoch = load_checkpoint(model, optimizer, trainer.device, Config.resume)
+    
     criterion = torch.nn.BCEWithLogitsLoss()
-
+    SKIP_TRAINING = False
+    
     while epoch <= Config.epochs:
         epoch += 1
-        pbar = iter(enumerate(train_loader))
-        # change model to train mode
-        model.train()
-        model.to(trainer.device)
-
-        for j in range(max_full_batch + (last_accum_step != 0)):  # repeat for batch size + edge case
-            # NOTE: comment/uncomment below to block/pass training code
-            # continue
-            loss_accum = 0.0
-            preds = []
-            for micro_steps in range(Config.grad_accum_steps):
-                try:
-                    i, data = next(pbar)
-                except:
-                    break  # should break to next epoch since j is already at the last batch
-
-                with torch.cuda.amp.autocast(trainer.amp):
-                    data = trainer.preprocess_batch(data)
-                    data = preprocess_data(base_path, data)  # adds CT data and unify the data device
-                    if data is None:  # case when only PA exist
-                        print("No data")
-                        continue
-
-                    # Forward pass
-                    # pred = model(data["CT_image"], data["img"])
-                    pred, cam1, cam2 = model(data["CT_image"], data["img"])
-                    
-                    if epoch % 10 == 0:
-                        visualize_activation_map_2d(data["img"], cam1, j, epoch, data)
-                        visualize_activation_map_3d(data["CT_image"], cam2, j, epoch, data)
-
-                    preds.append(round(F.sigmoid(pred.detach()).item(), 4))
-                    # binary cross entropy loss
-                    onj_cls = data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
-                    cls_loss = criterion(pred, onj_cls)
-
-                    # Backward pass
-                    if i >= (len(train_loader) - last_accum_step):
-                        loss = (cls_loss) / last_accum_step
-                    else:
-                        loss = (cls_loss) / Config.grad_accum_steps  # mean loss
-
-                    loss_accum += loss.detach()
-                    loss.backward()
-
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
-
-            # log the gradients and parameter values to tensorboard to check the training process
-            writer.add_histogram("gradients", norm, epoch * nb + i)
-
-            # DEBUG: Check gradients
-            def check_gradients(named_parameters):
-                for name, param in named_parameters:
-                    if param.requires_grad:
-                        if param.grad is None:
-                            print(f"Parameter {name} has no gradient.")
-                        else:
-                            print(f"Parameter {name} gradient: {param.grad.abs().mean()}")
-
-            # print(f"----------------  gradients  -------------------------")
-            # check gradients for the first batch
-            # if j == 0:
-            #     check_gradients(model.named_parameters())
-            # print(f"------------------------------------------------------")
-
-            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-            lr = get_lr((epoch * nb) + i)
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
-
-            optimizer.step()
-            optimizer.zero_grad()
-
-            log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
-            print(log_message)
-            print(preds)
-
-            logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
-
-        # test the model with validation set
+        
+        if not SKIP_TRAINING:
+            model.train()
+            model.to(trainer.device)
+            pbar = iter(enumerate(train_loader))
+            
+            for j in range(max_full_batch + (last_accum_step != 0)):
+                loss_accum, norm = 0.0, 0.0
+                preds = []
+                
+                for micro_steps in range(Config.grad_accum_steps):
+                    try:
+                        i, data = next(pbar)
+                    except StopIteration:
+                        break
+                        
+                    with torch.cuda.amp.autocast(trainer.amp):
+                        cls_loss, pred_prob, _ = train_step(model, data, criterion, Config, trainer, base_path)
+                        if cls_loss is None:
+                            continue
+                            
+                        preds.append(pred_prob)
+                        loss = cls_loss / (last_accum_step if i >= (len(train_loader) - last_accum_step) else Config.grad_accum_steps)
+                        
+                        norm = norm + torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+                        loss_accum += loss.detach()
+                        loss.backward()
+                
+                # Update model
+                norm = norm / Config.grad_accum_steps
+                lr = get_lr((epoch * nb) + i)
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = lr
+                optimizer.step()
+                optimizer.zero_grad()
+                
+                # Log progress
+                log_message = f"train epoch: {epoch} step {(epoch*nb)+i+1} norm: {norm:.4f} loss: {loss_accum.item():.4f} lr: {lr:.10f}"
+                print(preds)
+                print(log_message)
+                logger.log(f"train {loss_accum.item():.4f} norm {norm:.4f} lr {lr:.10f}\n")
+        else:
+            print(f"Skipping training for epoch {epoch} to test validation code.")
+            
+        # Validation
         with torch.cuda.amp.autocast(trainer.amp), torch.no_grad():
             model.eval()
+            model.to(trainer.device)
             loss_accum = 0.0
-            targets = []
-            preds = []
-
+            targets, preds = [], []
+            
             for k, data in enumerate(test_loader):
-                data = trainer.preprocess_batch(data)
-                proc_data = preprocess_data(base_path, data)
-
-                if proc_data is None:
-                    print("No data: " + data["im_file"])
-                    continue
-
-                pred, cam1, cam2 = model(proc_data["CT_image"], proc_data["img"])
-                preds.append(round(F.sigmoid(pred.detach()).item(), 4))
-
-                # binary cross entropy loss
-                onj_cls = proc_data["onj_cls"].unsqueeze(0).unsqueeze(0).half()
-                targets.append(onj_cls.item())
-
-                cls_loss = criterion(pred, onj_cls)
-
-                loss_accum += cls_loss.detach()
-
+                cls_loss, pred_prob, target = validate_step(model, data, criterion, trainer, base_path, epoch, log_dir)
+                if cls_loss is not None:
+                    loss_accum += cls_loss.detach()
+                    preds.append(pred_prob)
+                    targets.append(target)
+                    
             loss_accum /= len(test_loader)
-
+            current_auroc = roc_auc_score(y_true=targets, y_score=preds)
+            
             try:
                 print(f"valid epoch: {epoch} step {(epoch*nb)+i+1} loss: {loss_accum.item():.4f}")
             except:
                 pass
-            logger.log(
-                f"epoch {epoch} valid {loss_accum.item():.4f} auroc {roc_auc_score(y_true=targets, y_score=preds)}\n"
-            )
-
+                
+            logger.log(f"epoch {epoch} valid {loss_accum.item():.4f} auroc {current_auroc}\n")
+            
+            # Save checkpoints
             if best_loss > loss_accum.item():
                 best_loss = loss_accum.item()
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "best_auroc": best_auroc,
-                        "best_loss": best_loss,
-                    },
-                    f"{log_dir}/best_loss.pth",
-                )
+                save_checkpoint(model, optimizer, epoch, best_auroc, best_loss, f"{log_dir}/best_loss.pth")
                 print(f"best_loss: {best_loss} saved")
-
-            if best_auroc < roc_auc_score(y_true=targets, y_score=preds):
-                best_auroc = roc_auc_score(y_true=targets, y_score=preds)
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "best_auroc": best_auroc,
-                        "best_loss": best_loss,
-                    },
-                    f"{log_dir}/best_auroc.pth",
-                )
+                
+            if best_auroc < current_auroc:
+                best_auroc = current_auroc
+                save_checkpoint(model, optimizer, epoch, best_auroc, best_loss, f"{log_dir}/best_auroc.pth")
                 print(f"best_auroc: {best_auroc} saved")
-
-            # save the last model for the last epoch
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_auroc": best_auroc,
-                    "best_loss": best_loss,
-                },
-                f"{log_dir}/last.pth",
-            )
-
+                
+            # Save last checkpoint
+            save_checkpoint(model, optimizer, epoch, best_auroc, best_loss, f"{log_dir}/last.pth")
 
 if __name__ == "__main__":
     main()
